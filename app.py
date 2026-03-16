@@ -589,8 +589,11 @@ def add_transaction_bundle():
                          (bundle_id, p_id, qty, price, has_vat))
             
         conn.commit()
-    except Exception as e:
         conn.close()
+        action = 'Орлого' if tx_type == 'in' else 'Зарлага'
+        return jsonify({'message': f'{action} амжилттай бүртгэгдлээ', 'bundle_id': bundle_id}), 201
+    except Exception as e:
+        if 'conn' in locals(): conn.close()
         return jsonify({'error': str(e)}), 400
 
 @app.route('/api/brands', methods=['GET'])
@@ -659,8 +662,6 @@ def delete_brand(bid):
     except Exception as e:
         conn.close()
         return jsonify({'error': str(e)}), 500
-    action = 'Орлого' if tx_type == 'in' else 'Зарлага'
-    return jsonify({'message': f'{action} амжилттай бүртгэгдлээ', 'bundle_id': bundle_id}), 201
 
 
 @app.route('/api/transactions', methods=['GET'])
