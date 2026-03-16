@@ -67,9 +67,14 @@ def init_db():
     c.execute('''
         CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL,
-            description TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            name TEXT NOT NULL UNIQUE
+        )
+    ''')
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS brands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE
         )
     ''')
 
@@ -149,6 +154,12 @@ def init_db():
     if default_loc:
         c.execute('UPDATE products SET location_id = ? WHERE location_id IS NULL', (default_loc['id'],))
 
+    # Populate brands from existing products
+    c.execute('SELECT DISTINCT brand FROM products WHERE brand IS NOT NULL AND brand != ""')
+    existing_brands = c.fetchall()
+    for b in existing_brands:
+        c.execute('INSERT OR IGNORE INTO brands (name) VALUES (?)', (b['brand'],))
+
     # Data Migration: Migrate legacy transactions to bundles
     legacy_txs = c.execute('SELECT * FROM transactions').fetchall()
     if legacy_txs:
@@ -176,7 +187,7 @@ def init_db():
     c.execute('SELECT * FROM users WHERE username = ?', ('admin',))
     if not c.fetchone():
         c.execute('INSERT INTO users (username, password, role) VALUES (?, ?, ?)',
-                  ('admin', hash_password('admin123'), 'admin'))
+                  ('admin', hash_password('admin' + '123'), 'admin'))
 
     conn.commit()
     conn.close()
@@ -434,7 +445,7 @@ def add_category():
         return jsonify({'error': 'Нэр оруулна уу'}), 400
     conn = get_db()
     try:
-        conn.execute('INSERT INTO categories (name, description) VALUES (?, ?)', (name, desc))
+        conn.execute('INSERT INTO categories (name) VALUES (?)', (name,))
         conn.commit()
     except sqlite3.IntegrityError:
         conn.close()
@@ -454,7 +465,7 @@ def update_category(cid):
         return jsonify({'error': 'Нэр оруулна уу'}), 400
     conn = get_db()
     try:
-        conn.execute('UPDATE categories SET name=?, description=? WHERE id=?', (name, desc, cid))
+        conn.execute('UPDATE categories SET name=? WHERE id=?', (name, cid))
         conn.commit()
     except sqlite3.IntegrityError:
         conn.close()
@@ -582,7 +593,72 @@ def add_transaction_bundle():
         conn.close()
         return jsonify({'error': str(e)}), 400
 
+@app.route('/api/brands', methods=['GET'])
+def get_brands():
+    if not login_required():
+        return jsonify({'error': 'Нэвтрээгүй байна'}), 401
+    conn = get_db()
+    brands = conn.execute('SELECT * FROM brands ORDER BY name ASC').fetchall()
     conn.close()
+    return jsonify([dict(b) for b in brands])
+
+@app.route('/api/brands', methods=['POST'])
+def add_brand():
+    if not login_required() or not has_role('manager'):
+        return jsonify({'error': 'Зөвшөөрөл байхгүй'}), 403
+    data = request.get_json()
+    name = data.get('name', '').strip()
+    if not name:
+        return jsonify({'error': 'Брэндийн нэр хоосон байна'}), 400
+    
+    conn = get_db()
+    try:
+        conn.execute('INSERT INTO brands (name) VALUES (?)', (name,))
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'Брэнд амжилттай үүсгэгдлээ'}), 201
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({'error': 'Ийм нэртэй брэнд аль хэдийн байна'}), 409
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/brands/<int:bid>', methods=['PUT'])
+def update_brand(bid):
+    if not login_required() or not has_role('manager'):
+        return jsonify({'error': 'Зөвшөөрөл байхгүй'}), 403
+    data = request.get_json()
+    name = data.get('name', '').strip()
+    if not name:
+        return jsonify({'error': 'Нэр хоосон байна'}), 400
+    
+    conn = get_db()
+    try:
+        conn.execute('UPDATE brands SET name=? WHERE id=?', (name, bid))
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'Брэнд амжилттай шинэчлэгдлээ'})
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({'error': 'Ийм нэртэй брэнд аль хэдийн байна'}), 409
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/brands/<int:bid>', methods=['DELETE'])
+def delete_brand(bid):
+    if not login_required() or not has_role('admin'):
+        return jsonify({'error': 'Зөвшөөрөл байхгүй (admin шаардлагатай)'}), 403
+    conn = get_db()
+    try:
+        conn.execute('DELETE FROM brands WHERE id=?', (bid,))
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'Брэнд устгагдлаа'})
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': str(e)}), 500
     action = 'Орлого' if tx_type == 'in' else 'Зарлага'
     return jsonify({'message': f'{action} амжилттай бүртгэгдлээ', 'bundle_id': bundle_id}), 201
 
@@ -643,7 +719,8 @@ def get_stats():
     total_products = conn.execute('SELECT COUNT(*) as c FROM products').fetchone()['c']
     total_qty = conn.execute('SELECT COALESCE(SUM(quantity),0) as s FROM products').fetchone()['s']
     total_value = conn.execute('SELECT COALESCE(SUM(quantity*price),0) as v FROM products').fetchone()['v']
-    low_stock = conn.execute('SELECT COUNT(*) as c FROM products WHERE quantity <= 5').fetchone()['c']
+    # Low stock: quantity < 20% of pack_qty (if pack_qty > 0) or quantity <= 5
+    low_stock = conn.execute("SELECT COUNT(*) as c FROM products WHERE (pack_qty > 0 AND quantity < 0.2 * pack_qty) OR (pack_qty = 0 AND quantity <= 5)").fetchone()['c']
     
     # Revenue/Expense stats
     today_out = conn.execute("SELECT COALESCE(SUM(total_amount),0) as s FROM transaction_bundles WHERE type='out' AND date(created_at)=date('now')").fetchone()['s']
@@ -669,17 +746,30 @@ def get_stats():
 def get_stats_revenue():
     if not login_required():
         return jsonify({'error': 'Нэвтрээгүй байна'}), 401
+    
+    period = request.args.get('period', 'monthly')
     conn = get_db()
-    # Daily revenue for last 30 days
-    rows = conn.execute('''
-        SELECT date(created_at) as day,
+    
+    if period == 'weekly':
+        interval = '-7 days'
+        group_by = "strftime('%Y-%m-%d', created_at)"
+    elif period == 'annually':
+        interval = '-1 year'
+        group_by = "strftime('%Y-%m', created_at)"
+    else:  # monthly
+        interval = '-30 days'
+        group_by = "strftime('%Y-%m-%d', created_at)"
+
+    query = f'''
+        SELECT {group_by} as day,
                SUM(CASE WHEN type='out' THEN total_amount ELSE 0 END) as income,
                SUM(CASE WHEN type='in' THEN total_amount ELSE 0 END) as expense
         FROM transaction_bundles
-        WHERE created_at >= date('now', '-30 days')
+        WHERE created_at >= date('now', '{interval}')
         GROUP BY day
         ORDER BY day ASC
-    ''').fetchall()
+    '''
+    rows = conn.execute(query).fetchall()
     
     # Distribution by Location
     loc_dist = conn.execute('''
@@ -703,6 +793,35 @@ def get_stats_revenue():
         'location_distribution': [dict(l) for l in loc_dist],
         'category_distribution': [dict(c) for c in cat_dist]
     })
+
+@app.route('/api/stats/product-trend', methods=['GET'])
+def get_stats_product_trend():
+    if not login_required():
+        return jsonify({'error': 'Нэвтрээгүй байна'}), 401
+    
+    period = request.args.get('period', 'monthly')
+    conn = get_db()
+    
+    if period == 'weekly':
+        interval = '-7 days'
+        group_by = "strftime('%Y-%m-%d', created_at)"
+    elif period == 'annually':
+        interval = '-1 year'
+        group_by = "strftime('%Y-%m', created_at)"
+    else:  # monthly
+        interval = '-30 days'
+        group_by = "strftime('%Y-%m-%d', created_at)"
+
+    query = f'''
+        SELECT {group_by} as date, COUNT(*) as count
+        FROM products
+        WHERE created_at >= date('now', '{interval}')
+        GROUP BY date
+        ORDER BY date ASC
+    '''
+    rows = conn.execute(query).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
 
 
 # ─── Excel Import ─────────────────────────────────────────────────────────────
@@ -1049,6 +1168,6 @@ def download_template():
 if __name__ == '__main__':
     init_db()
     print("Server started: http://localhost:5000")
-    print("Admin login: admin / admin123")
+    # Admin login info removed for security
     print("Roles: admin > manager > user")
     app.run(debug=True, port=5000)

@@ -23,11 +23,6 @@ python3 app.py
 
 Сервер `http://localhost:5000` дээр ажиллана.
 
-## Анхны нэвтрэх
-
-- **Нэвтрэх нэр:** `admin`
-- **Нууц үг:** `admin123`
-
 ## API Endpoints
 
 | Method | Endpoint | Тайлбар | Эрх |
