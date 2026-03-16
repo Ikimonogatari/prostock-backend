@@ -592,6 +592,8 @@ def get_transactions():
     if not login_required():
         return jsonify({'error': 'Нэвтрээгүй байна'}), 401
     tx_type = request.args.get('type', '')
+    start_date = request.args.get('start_date', '')
+    end_date = request.args.get('end_date', '')
     limit = min(int(request.args.get('limit', 100)), 500)
 
     conn = get_db()
@@ -605,6 +607,12 @@ def get_transactions():
     if tx_type in ('in', 'out'):
         query += ' AND b.type = ?'
         params.append(tx_type)
+    if start_date:
+        query += ' AND DATE(b.created_at) >= ?'
+        params.append(start_date)
+    if end_date:
+        query += ' AND DATE(b.created_at) <= ?'
+        params.append(end_date)
     query += ' ORDER BY b.created_at DESC LIMIT ?'
     params.append(limit)
     
