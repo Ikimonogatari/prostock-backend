@@ -944,7 +944,7 @@ def export_products():
     ws = wb.active
     ws.title = 'Барааны жагсаалт'
 
-    headers = ['№', 'Брэнд', 'Бараа код', 'Бараа нэр', 'Агуулах', 'Нэгж', 'Тоо Ширхэг', 'Үлдэгдэл', 'Урдаас ирсэн үнэ Юань', 'Төгрөг', 'НӨАТ', 'Нийт үнэ (₮)', 'Огноо']
+    headers = ['№', 'Брэнд', 'Бараа код', 'Бараа нэр', 'Ангилал', 'Агуулах', 'Нэгж', 'Багцын тоо', 'Үлдэгдэл', 'Нэгж үнэ (₮)', 'Урдаас ирсэн үнэ (¥)', 'НӨАТ', 'Нийт үнэ (₮)', 'Тайлбар', 'Огноо']
     ws.append(headers)
 
     # Style header
@@ -962,14 +962,16 @@ def export_products():
             p['brand'] or '',
             p['barcode'] or '',
             p['name'],
+            p['category'] or '',
             p['location'] or 'Үндсэн Агуулах',
             p['unit'] or '',
             p['pack_qty'] or 0,
             p['quantity'],
-            p['price_cn'] or 0,
             p['price'],
+            p['price_cn'] or 0,
             'Тийм' if p['has_vat'] else 'Үгүй',
             round(p['quantity'] * p['price'], 2),
+            p['description'] or '',
             p['created_at'] or ''
         ])
 
