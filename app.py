@@ -6,6 +6,10 @@ import os
 import secrets
 import sys
 import io
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -15,6 +19,9 @@ CORS(app, supports_credentials=True, origins=["http://localhost:3000"])
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'database.db')
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), 'template.xlsx')
+UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), 'uploads')
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
 
 # ─── Roles ───────────────────────────────────────────────────────────────────
 # admin   → бүх зүйл хийх боломжтой
@@ -93,6 +100,7 @@ def init_db():
             has_vat INTEGER DEFAULT 0,
             location_id INTEGER,
             location TEXT DEFAULT 'Үндсэн Агуулах',
+            image TEXT,
             description TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(location_id) REFERENCES locations(id)
@@ -356,11 +364,20 @@ def get_products():
 @app.route('/api/products', methods=['POST'])
 def add_product():
     if not login_required() or not has_role('manager'):
-        return jsonify({'error': 'Бараа нэмэх эрх байхгүй (manager эсвэл admin шаардлагатай)'}), 403
-    data = request.get_json()
+        return jsonify({'error': 'Бараа нэмэх эрх байхгүй'}), 403
+    
+    # Handle multipart/form-data if file is present
+    if request.content_type and 'multipart/form-data' in request.content_type:
+        data = request.form
+        image_file = request.files.get('image')
+    else:
+        data = request.get_json()
+        image_file = None
+
     name = data.get('name', '').strip()
     if not name:
         return jsonify({'error': 'Барааны нэр заавал оруулна уу'}), 400
+    
     brand = data.get('brand', '').strip()
     barcode = data.get('barcode', '').strip()
     unit = data.get('unit', '').strip()
@@ -369,18 +386,26 @@ def add_product():
     quantity = max(0, int(data.get('quantity', 0)))
     price = max(0.0, float(data.get('price', 0)))
     price_cn = max(0.0, float(data.get('price_cn', 0)))
-    has_vat = 1 if data.get('has_vat') else 0
+    has_vat = 1 if data.get('has_vat') == 'true' or data.get('has_vat') == 1 or data.get('has_vat') is True else 0
     location_id = data.get('location_id')
     description = data.get('description', '').strip()
     
+    img_name = None
+    if image_file and image_file.filename:
+        ext = image_file.filename.split('.')[-1].lower()
+        if ext in ['png', 'jpg', 'jpeg']:
+            img_name = f"{secrets.token_hex(8)}.{ext}"
+            image_file.save(os.path.join(UPLOAD_FOLDER, img_name))
+
     conn = get_db()
-    # If location_id is not provided, try to find default
     if not location_id:
         loc = conn.execute('SELECT id FROM locations LIMIT 1').fetchone()
         location_id = loc['id'] if loc else None
 
-    conn.execute('INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                 (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description))
+    conn.execute('''
+        INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, image) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, img_name))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Бараа нэмэгдлээ'}), 201
@@ -390,10 +415,18 @@ def add_product():
 def update_product(pid):
     if not login_required() or not has_role('manager'):
         return jsonify({'error': 'Бараа засах эрх байхгүй'}), 403
-    data = request.get_json()
+    
+    if request.content_type and 'multipart/form-data' in request.content_type:
+        data = request.form
+        image_file = request.files.get('image')
+    else:
+        data = request.get_json()
+        image_file = None
+
     name = data.get('name', '').strip()
     if not name:
         return jsonify({'error': 'Барааны нэр заавал оруулна уу'}), 400
+    
     brand = data.get('brand', '').strip()
     barcode = data.get('barcode', '').strip()
     unit = data.get('unit', '').strip()
@@ -402,12 +435,32 @@ def update_product(pid):
     quantity = max(0, int(data.get('quantity', 0)))
     price = max(0.0, float(data.get('price', 0)))
     price_cn = max(0.0, float(data.get('price_cn', 0)))
-    has_vat = 1 if data.get('has_vat') else 0
+    has_vat = 1 if data.get('has_vat') == 'true' or data.get('has_vat') == 1 or data.get('has_vat') is True else 0
     location_id = data.get('location_id')
     description = data.get('description', '').strip()
+    
     conn = get_db()
-    conn.execute('UPDATE products SET name=?, brand=?, barcode=?, unit=?, category=?, pack_qty=?, quantity=?, price=?, price_cn=?, has_vat=?, location_id=?, description=? WHERE id=?',
-                 (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, pid))
+    existing = conn.execute('SELECT image FROM products WHERE id = ?', (pid,)).fetchone()
+    img_name = existing['image'] if existing else None
+    
+    if image_file and image_file.filename:
+        ext = image_file.filename.split('.')[-1].lower()
+        if ext in ['png', 'jpg', 'jpeg']:
+            # Delete old image if it exists
+            if img_name:
+                old_path = os.path.join(UPLOAD_FOLDER, img_name)
+                if os.path.exists(old_path):
+                    try: os.remove(old_path)
+                    except: pass
+            
+            img_name = f"{secrets.token_hex(8)}.{ext}"
+            image_file.save(os.path.join(UPLOAD_FOLDER, img_name))
+
+    conn.execute('''
+        UPDATE products 
+        SET name=?, brand=?, barcode=?, unit=?, category=?, pack_qty=?, quantity=?, price=?, price_cn=?, has_vat=?, location_id=?, description=?, image=? 
+        WHERE id=?
+    ''', (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, img_name, pid))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Бараа шинэчлэгдлээ'})
@@ -698,7 +751,7 @@ def get_transactions():
     for b in bundles:
         bundle_dict = dict(b)
         items = conn.execute('''
-            SELECT ti.*, p.name as product_name, p.brand, p.barcode
+            SELECT ti.*, p.name as product_name, p.brand, p.barcode, p.pack_qty, p.unit
             FROM transaction_items ti
             JOIN products p ON ti.product_id = p.id
             WHERE ti.bundle_id = ?
@@ -845,12 +898,14 @@ def parse_excel(file_bytes):
     FIELD_ALIASES = {
         'name':     ['бараа нэр', 'нэр'],
         'unit':     ['нэгж'],
-        'qty_new':  ['тоо ширхэг', 'тоо', 'ширхэг'],
+        'qty_new':  ['тоо ширхэг', 'тоо'],
         'qty_rem':  ['үлдэгдэл'],
         'price_cn': ['урдаас ирсэн үнэ юань', 'юань', 'үнэ юань'],
-        'price':    ['төгрөг', 'үнэ төгрөг', 'мнт'],
+        'price':    ['төгрөг', 'үнэ төгрөг', 'мнт', 'үнийн дүн'],
         'brand':    ['брэнд'],
-        'code':     ['бараа код', 'код'],
+        'code':     ['бараа код', 'код', 'баркод'],
+        'image_col':['зураг'],
+        'location': ['агуулах'],
     }
 
     for row_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=20, values_only=True), start=1):
@@ -869,6 +924,33 @@ def parse_excel(file_bytes):
     if not header_row or not col_map.get('name'):
         return None, '"Бараа нэр" гарчиг олдсонгүй. Excel файлаа шалгана уу.'
 
+    # Extract images
+    image_map = {} # (row, col) -> filename
+    if hasattr(ws, '_images'):
+        for img in ws._images:
+            # openpyxl stores image anchors. Usually OneCellAnchor or TwoCellAnchor.
+            # We want to know which row it's in.
+            row = None
+            col = None
+            from openpyxl.drawing.spreadsheet_drawing import AnchorMarker
+            if hasattr(img.anchor, '_from'):
+                row = img.anchor._from.row + 1 # 1-indexed
+                col = img.anchor._from.col + 1
+            elif hasattr(img.anchor, 'row'):
+                row = img.anchor.row
+                col = img.anchor.col
+            
+            if row is not None and Image:
+                img_name = f"import_{secrets.token_hex(8)}.png"
+                img_path = os.path.join(UPLOAD_FOLDER, img_name)
+                # Save image using Pillow
+                try:
+                    pil_img = Image.open(io.BytesIO(img._data()))
+                    pil_img.save(img_path)
+                    image_map[(row, col)] = img_name
+                except Exception as e:
+                    print(f"Image extraction error: {e}")
+
     rows = []
     for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
         def g(field):
@@ -880,23 +962,39 @@ def parse_excel(file_bytes):
             continue
         name = str(name).strip()
 
+        def clean_num(val):
+            if val is None: return 0
+            s = str(val).replace('₮', '').replace('¥', '').replace(',', '').strip()
+            try:
+                return float(s)
+            except:
+                return 0
+
         try:
-            qty_new = int(float(g('qty_new') or 0))
-        except (ValueError, TypeError):
+            qty_new = int(clean_num(g('qty_new')))
+        except:
             qty_new = 0
         try:
-            qty_rem = int(float(g('qty_rem') or 0))
-        except (ValueError, TypeError):
+            qty_rem = int(clean_num(g('qty_rem')))
+        except:
             qty_rem = qty_new
         try:
-            price = float(g('price') or 0)
-        except (ValueError, TypeError):
+            price = clean_num(g('price'))
+        except:
             price = 0.0
 
         brand = str(g('brand') or '').strip()
         unit = str(g('unit') or '').strip()
         code = g('code')
-        code = str(int(code)) if code is not None else ''
+        code = str(code) if code is not None else ''
+        
+        loc_val = str(g('location') or '').strip() or 'Үндсэн Агуулах'
+        
+        # Check for image in this row at image_col
+        img_filename = None
+        img_col_idx = col_map.get('image_col')
+        if img_col_idx:
+            pass
 
         rows.append({
             'name': name,
@@ -906,7 +1004,18 @@ def parse_excel(file_bytes):
             'qty_new': qty_new,
             'qty_rem': qty_rem,
             'price': price,
+            'price_cn': clean_num(g('price_cn')),
+            'location': loc_val,
+            'image_file': None # Will fill below
         })
+
+    # Since values_only=True doesn't give us row index easily, 
+    # let's re-iterate with index to match images.
+    for i, r_data in enumerate(rows):
+        row_num = header_row + 1 + i
+        img_col_idx = col_map.get('image_col')
+        if img_col_idx and (row_num, img_col_idx) in image_map:
+            r_data['image_file'] = image_map[(row_num, img_col_idx)]
 
     return rows, None
 
@@ -947,23 +1056,28 @@ def import_products_excel():
         pack_qty = r['qty_new']  # Тоо Ширхэг = number of packages
         qty = r['qty_rem'] if r['qty_rem'] > 0 else r['qty_new']  # Үлдэгдэл = total items
         price = r['price']
+        image_file = r.get('image_file')
 
-        existing = conn.execute('SELECT * FROM products WHERE name = ? AND location = ?', (name, location)).fetchone()
+        existing = conn.execute('SELECT id, image FROM products WHERE name = ?', (name,)).fetchone()
         try:
             if existing:
-                if mode == 'update':
-                    conn.execute('UPDATE products SET brand=?, barcode=?, unit=?, category=?, pack_qty=?, quantity=?, price=?, description=? WHERE id=?',
-                                 (brand, barcode, unit, category, pack_qty, qty, price, desc, existing['id']))
-                    updated += 1
-                elif mode == 'add':
-                    conn.execute('INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, location, description) VALUES (?,?,?,?,?,?,?,?,?,?)',
-                                 (name, brand, barcode, unit, category, pack_qty, qty, price, location, desc))
-                    added += 1
-                else:
+                if mode == 'skip':
                     skipped += 1
+                    continue
+                # Update
+                # If new image provided, use it. Otherwise keep old.
+                final_img = image_file if image_file else existing['image']
+                conn.execute('''
+                    UPDATE products 
+                    SET brand=?, barcode=?, unit=?, category=?, pack_qty=?, quantity=?, price=?, price_cn=?, location=?, image=? 
+                    WHERE id=?
+                ''', (brand, barcode, unit, category, pack_qty, qty, price, r.get('price_cn', 0), location, final_img, existing['id']))
+                updated += 1
             else:
-                conn.execute('INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, location, description) VALUES (?,?,?,?,?,?,?,?,?,?)',
-                             (name, brand, barcode, unit, category, pack_qty, qty, price, location, desc))
+                conn.execute('''
+                    INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, location, image) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (name, brand, barcode, unit, category, pack_qty, qty, price, r.get('price_cn', 0), location, image_file))
                 added += 1
         except Exception as ex:
             errors.append(f'{name}: {ex}')
@@ -1071,37 +1185,61 @@ def export_products():
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = 'Барааны жагсаалт'
-
-    headers = ['№', 'Брэнд', 'Бараа код', 'Бараа нэр', 'Ангилал', 'Агуулах', 'Нэгж', 'Багцын тоо', 'Үлдэгдэл', 'Нэгж үнэ (₮)', 'Урдаас ирсэн үнэ (¥)', 'НӨАТ', 'Нийт үнэ (₮)', 'Тайлбар', 'Огноо']
+    
+    # New strict order: Брэнд, Бараа код, Зураг, Бараа нэр, Нэгж, Тоо Ширхэг, Үлдэгдэл, Урдаас ирсэн үнэ Юань, Төгрөг, Агуулах
+    headers = ['Брэнд', 'Бараа код', 'Зураг', 'Бараа нэр', 'Нэгж', 'Тоо Ширхэг', 'Үлдэгдэл', 'Урдаас ирсэн үнэ Юань', 'Төгрөг', 'Агуулах']
     ws.append(headers)
 
     # Style header
     from openpyxl.styles import Font, PatternFill, Alignment
     header_font = Font(bold=True, color='FFFFFF', size=11)
     header_fill = PatternFill(start_color='4F46E5', end_color='4F46E5', fill_type='solid')
-    for col_idx, cell in enumerate(ws[1], 1):
+    for cell in ws[1]:
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal='center')
 
-    for i, p in enumerate(products, 1):
+    from openpyxl.drawing.image import Image as XLImage
+    
+    for idx, p in enumerate(products, 2): # Start from row 2
+        img_val = ''
+        if p['image']:
+            img_path = os.path.join(UPLOAD_FOLDER, p['image'])
+            if os.path.exists(img_path):
+                try:
+                    img = XLImage(img_path)
+                    # Resize for cell (roughly 50x50px)
+                    img.width = 40
+                    img.height = 40
+                    # Zuraag 3-r baganad (Column C) oruulna
+                    ws.add_image(img, f'C{idx}')
+                    ws.row_dimensions[idx].height = 35 # Adjust row height
+                except Exception as e:
+                    img_val = f'Error: {e}'
+        
         ws.append([
-            i,
             p['brand'] or '',
             p['barcode'] or '',
+            img_val, # Cell text can be empty if image is added
             p['name'],
-            p['category'] or '',
-            p['location'] or 'Үндсэн Агуулах',
             p['unit'] or '',
             p['pack_qty'] or 0,
             p['quantity'],
-            p['price'],
-            p['price_cn'] or 0,
-            'Тийм' if p['has_vat'] else 'Үгүй',
-            round(p['quantity'] * p['price'], 2),
-            p['description'] or '',
-            p['created_at'] or ''
+            f"{p['price_cn'] or 0} ¥",
+            f"{p['price'] or 0} ₮",
+            p['location'] or 'Үндсэн Агуулах'
         ])
+
+    # Apply borders and alignment
+    from openpyxl.styles import Border, Side
+    thin = Side(border_style="thin", color="000000")
+    border = Border(top=thin, left=thin, right=thin, bottom=thin)
+    
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
+        for cell in row:
+            cell.border = border
+            if cell.row > 1: # Data rows
+                cell.alignment = Alignment(vertical='center', horizontal='center')
 
     # Auto-width
     for col in ws.columns:
@@ -1143,7 +1281,8 @@ def download_template():
     ws.title = 'Бараа импорт'
 
     from openpyxl.styles import Font, PatternFill, Alignment
-    headers = ['Бараа нэр', 'Брэнд', 'Нэгж', 'Бараа код', 'Тоо Ширхэг', 'Үлдэгдэл', 'Төгрөг']
+    # New strict order: Брэнд, Бараа код, Зураг, Бараа нэр, Нэгж, Тоо Ширхэг, Үлдэгдэл, Урдаас ирсэн үнэ Юань, Төгрөг, Агуулах
+    headers = ['Брэнд', 'Бараа код', 'Зураг', 'Бараа нэр', 'Нэгж', 'Тоо Ширхэг', 'Үлдэгдэл', 'Урдаас ирсэн үнэ Юань', 'Төгрөг', 'Агуулах']
     ws.append(headers)
 
     header_font = Font(bold=True, color='FFFFFF', size=11)
@@ -1154,8 +1293,17 @@ def download_template():
         cell.alignment = Alignment(horizontal='center')
 
     # Example rows
-    ws.append(['Жишээ бараа 1', 'Samsung', 'ширхэг', '001', 10, 10, 50000])
-    ws.append(['Жишээ бараа 2', 'LG', 'хайрцаг', '002', 5, 5, 120000])
+    ws.append(['Samsung', '001', '', 'Galaxy S21', 'ширхэг', 10, 10, '500 ¥', '500,000 ₮', 'Үндсэн агуулах'])
+    ws.append(['LG', '002', '', 'LG Monitor 27', 'хайрцаг', 5, 5, '800 ¥', '1,200,000 ₮', 'Үндсэн агуулах'])
+
+    # Apply borders
+    from openpyxl.styles import Border, Side
+    thin = Side(border_style="thin", color="000000")
+    border = Border(top=thin, left=thin, right=thin, bottom=thin)
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
+        for cell in row:
+            cell.border = border
+            cell.alignment = Alignment(vertical='center', horizontal='center')
 
     for col in ws.columns:
         col_letter = col[0].column_letter
@@ -1168,8 +1316,22 @@ def download_template():
                      as_attachment=True, download_name='template.xlsx')
 
 
+@app.route('/uploads/<path:filename>')
+def uploaded_file(filename):
+    return send_from_directory(UPLOAD_FOLDER, filename)
+
+
 if __name__ == '__main__':
     init_db()
+    # Migration: add image column if not exists
+    conn = get_db()
+    try:
+        conn.execute('ALTER TABLE products ADD COLUMN image TEXT')
+        conn.commit()
+    except:
+        pass
+    conn.close()
+    
     print("Server started: http://localhost:5000")
     # Admin login info removed for security
     print("Roles: admin > manager > user")

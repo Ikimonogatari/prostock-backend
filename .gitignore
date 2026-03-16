@@ -12,3 +12,4 @@ database.db
 *.log
 *.sqlite
 .DS_Store
+uploads/
