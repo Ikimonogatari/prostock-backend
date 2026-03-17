@@ -38,6 +38,7 @@ def create_app(config_class=Config):
         # Serve uploads
         from flask import send_from_directory
         @app.route('/uploads/<path:filename>')
+        @app.route('/api/uploads/<path:filename>')
         def uploaded_file(filename):
             return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
