@@ -6,6 +6,17 @@ import secrets
 
 products_bp = Blueprint('products', __name__)
 
+def safe_delete_image(conn, image_filename):
+    if not image_filename: return
+    try:
+        count_row = conn.execute('SELECT COUNT(*) as c FROM products WHERE image=?', (image_filename,)).fetchone()
+        if count_row and count_row['c'] == 0:
+            file_path = os.path.join(current_app.config['UPLOAD_FOLDER'], image_filename)
+            if os.path.exists(file_path):
+                os.remove(file_path)
+    except Exception as e:
+        print(f"Error checking/deleting orphaned image {image_filename}: {e}")
+
 @products_bp.route('/products', methods=['GET'])
 def get_products():
     if not login_required():
@@ -136,6 +147,7 @@ def update_product(pid):
         return jsonify({'error': 'Бараа олдсонгүй'}), 404
         
     old_qty = product['quantity']
+    old_img = product['image']
     
     # Use form data if available (for image uploads), otherwise JSON
     if request.form:
@@ -192,6 +204,10 @@ def update_product(pid):
             '''
             conn.execute(sync_query, (brand, unit, category, description, img_name, has_vat, name, barcode, pid, product['barcode'], product['name']))
         
+        # Cleanup old image if it changed
+        if old_img and old_img != img_name:
+            safe_delete_image(conn, old_img)
+            
         # Track manual quantity change as 'fix'
         if quantity != old_qty:
             diff = quantity - old_qty
@@ -215,7 +231,13 @@ def delete_product(pid):
     if not login_required() or not has_role('admin'):
         return jsonify({'error': 'Зөвшөөрөл байхгүй'}), 403
     conn = get_db()
+    product = conn.execute('SELECT image FROM products WHERE id=?', (pid,)).fetchone()
+    
     conn.execute('DELETE FROM products WHERE id=?', (pid,))
+    
+    if product and product['image']:
+        safe_delete_image(conn, product['image'])
+        
     conn.commit()
     conn.close()
     return jsonify({'message': 'Бараа устгагдлаа'})
