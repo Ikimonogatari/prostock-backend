@@ -40,7 +40,8 @@ def create_app(config_class=Config):
         @app.route('/uploads/<path:filename>')
         @app.route('/api/uploads/<path:filename>')
         def uploaded_file(filename):
-            return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+            upload_dir = os.path.abspath(app.config['UPLOAD_FOLDER'])
+            return send_from_directory(upload_dir, filename)
 
     except Exception as e:
         print(f"!!! CRITICAL ERROR DURING BOOT !!!: {e}")
