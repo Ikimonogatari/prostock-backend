@@ -14,7 +14,7 @@ except ImportError:
 sys.stdout.reconfigure(encoding='utf-8')
 
 app = Flask(__name__)
-app.secret_key = secrets.token_hex(32)
+app.secret_key = "stockpro_secret_key_v1" # Persistent key for stable sessions
 CORS(app, supports_credentials=True, origins=["http://localhost:3000"])
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'database.db')
@@ -28,7 +28,7 @@ if not os.path.exists(UPLOAD_FOLDER):
 # manager → бараа нэмэх, засах, зарлага, орлого оруулах боломжтой (устгах БҮҮ)
 # user    → зөвхөн зарлага/орлого оруулах боломжтой (харах + гүйлгээ хийх)
 
-ROLE_LEVELS = {'user': 1, 'admin': 2}
+ROLE_LEVELS = {'user': 1, 'manager': 2, 'admin': 3}
 
 
 def has_role(min_role: str) -> bool:
@@ -115,7 +115,7 @@ def init_db():
     c.execute('''
         CREATE TABLE IF NOT EXISTS transaction_bundles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            type TEXT NOT NULL CHECK(type IN ('in','out')),
+            type TEXT NOT NULL CHECK(type IN ('in','out','fix')),
             total_amount REAL DEFAULT 0,
             note TEXT,
             created_by INTEGER,
@@ -142,7 +142,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             product_id INTEGER NOT NULL,
-            type TEXT NOT NULL CHECK(type IN ('in','out')),
+            type TEXT NOT NULL CHECK(type IN ('in','out','fix')),
             quantity INTEGER NOT NULL,
             note TEXT,
             created_by INTEGER,
@@ -162,6 +162,24 @@ def init_db():
     c.execute('SELECT * FROM locations WHERE name = ?', ('Үндсэн Агуулах',))
     if not c.fetchone():
         c.execute('INSERT INTO locations (name, description) VALUES (?, ?)', ('Үндсэн Агуулах', 'Админаас үүсгэсэн үндсэн агуулах'))
+
+    # Migration for transaction_bundles type constraint
+    bundles_sql = c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='transaction_bundles'").fetchone()
+    if bundles_sql and "CHECK(type IN ('in','out'))" in bundles_sql['sql']:
+        c.execute('ALTER TABLE transaction_bundles RENAME TO transaction_bundles_old')
+        c.execute('''
+            CREATE TABLE transaction_bundles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL CHECK(type IN ('in','out','fix')),
+                total_amount REAL DEFAULT 0,
+                note TEXT,
+                created_by INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(created_by) REFERENCES users(id)
+            )
+        ''')
+        c.execute('INSERT INTO transaction_bundles SELECT * FROM transaction_bundles_old')
+        c.execute('DROP TABLE transaction_bundles_old')
     
     default_loc = c.execute('SELECT id FROM locations WHERE name = ?', ('Үндсэн Агуулах',)).fetchone()
     if default_loc:
@@ -371,7 +389,8 @@ def get_products():
 @app.route('/api/products', methods=['POST'])
 def add_product():
     if not login_required() or not has_role('admin'):
-        return jsonify({'error': 'Бараа нэмэх эрх байхгүй'}), 403
+        role = session.get('role', 'none')
+        return jsonify({'error': f'Бараа нэмэх эрх байхгүй (Таны эрх: {role})'}), 403
     
     # Handle multipart/form-data if file is present
     if request.content_type and 'multipart/form-data' in request.content_type:
@@ -407,6 +426,8 @@ def add_product():
         
     if pack_qty < 0: return jsonify({'error': 'Багцын тоо 0-ээс бага байж болохгүй'}), 400
     if quantity < 0: return jsonify({'error': 'Үлдэгдэл 0-ээс бага байж болохгүй'}), 400
+    if pack_qty > 0 and quantity < pack_qty:
+        return jsonify({'error': f'Үлдэгдэл нь багцын тооноос бага байж болохгүй (Багц: {pack_qty})'}), 400
     if price < 0: return jsonify({'error': 'Нэгж үнэ 0-ээс бага байж болохгүй'}), 400
 
     has_vat = 1 if data.get('has_vat') == 'true' or data.get('has_vat') == 1 or data.get('has_vat') is True else 0
@@ -435,7 +456,8 @@ def add_product():
 @app.route('/api/products/<int:pid>', methods=['PUT'])
 def update_product(pid):
     if not login_required() or not has_role('admin'):
-        return jsonify({'error': 'Бараа засах эрх байхгүй'}), 403
+        role = session.get('role', 'none')
+        return jsonify({'error': f'Бараа засах эрх байхгүй (Таны эрх: {role})'}), 403
     
     if request.content_type and 'multipart/form-data' in request.content_type:
         data = request.form
@@ -470,26 +492,40 @@ def update_product(pid):
 
     if pack_qty < 0: return jsonify({'error': 'Багцын тоо 0-ээс бага байж болохгүй'}), 400
     if quantity < 0: return jsonify({'error': 'Үлдэгдэл 0-ээс бага байж болохгүй'}), 400
+    if pack_qty > 0 and quantity < pack_qty:
+        return jsonify({'error': f'Үлдэгдэл нь багцын тооноос бага байж болохгүй (Багц: {pack_qty})'}), 400
     if price < 0: return jsonify({'error': 'Нэгж үнэ 0-ээс бага байж болохгүй'}), 400
 
     has_vat = 1 if data.get('has_vat') == 'true' or data.get('has_vat') == 1 or data.get('has_vat') is True else 0
     
     conn = get_db()
-    existing = conn.execute('SELECT image FROM products WHERE id = ?', (pid,)).fetchone()
-    img_name = existing['image'] if existing else None
+    existing = conn.execute('SELECT quantity, image FROM products WHERE id = ?', (pid,)).fetchone()
+    if not existing:
+        conn.close()
+        return jsonify({'error': 'Бараа олдсонгүй'}), 404
+        
+    old_qty = existing['quantity']
+    img_name = existing['image']
     
     if image_file and image_file.filename:
         ext = image_file.filename.split('.')[-1].lower()
         if ext in ['png', 'jpg', 'jpeg']:
-            # Delete old image if it exists
             if img_name:
                 old_path = os.path.join(UPLOAD_FOLDER, img_name)
                 if os.path.exists(old_path):
                     try: os.remove(old_path)
                     except: pass
-            
             img_name = f"{secrets.token_hex(8)}.{ext}"
             image_file.save(os.path.join(UPLOAD_FOLDER, img_name))
+
+    # Log quantity change as a 'fix' transaction
+    if quantity != old_qty:
+        diff = quantity - old_qty
+        cursor = conn.execute('INSERT INTO transaction_bundles (type, total_amount, note, created_by) VALUES (?, ?, ?, ?)',
+                             ('fix', 0, 'Барааны мэдээлэл засварласнаар үлдэгдэл өөрчлөгдлөө', session['user_id']))
+        bundle_id = cursor.lastrowid
+        conn.execute('INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',
+                     (bundle_id, pid, diff, 0, 0))
 
     conn.execute('''
         UPDATE products 
@@ -521,6 +557,8 @@ def delete_product(pid):
     conn.commit()
     conn.close()
     return jsonify({'message': 'Бараа устгагдлаа'})
+
+
 
 
 @app.route('/api/categories', methods=['GET'])
@@ -636,7 +674,7 @@ def delete_location(lid):
 
 # ─── Transactions (зарлага / орлого) ─────────────────────────────────────────
 
-@app.route('/api/transactions', methods=['POST'])
+@app.route('/api/transactions/bundle', methods=['POST'])
 def add_transaction_bundle():
     if not login_required():
         return unauthorized()
@@ -652,20 +690,28 @@ def add_transaction_bundle():
     total_amount = 0
     
     try:
-        # Validate all items first
+        # Validate all items first and calculate total
         for item in items:
             p_id = item.get('product_id')
             qty = int(item.get('quantity', 0))
             if qty <= 0: continue
             
-            product = conn.execute('SELECT quantity, name FROM products WHERE id = ?', (p_id,)).fetchone()
+            product = conn.execute('SELECT quantity, name, price FROM products WHERE id = ?', (p_id,)).fetchone()
             if not product:
                 raise ValueError(f'Бараа олдсонгүй (ID: {p_id})')
             
             if tx_type == 'out' and product['quantity'] < qty:
                 raise ValueError(f"'{product['name']}' барааны үлдэгдэл хүрэлцэхгүй байна (Үлдэгдэл: {product['quantity']})")
             
-            price = float(item.get('price', 0))
+            # For "in" transactions (Add Stock), always use DB price. For "out" (Sell), use frontend price.
+            price = product['price'] if tx_type == 'in' else float(item.get('price', 0))
+            
+            # Pack-aware Stock Validation
+            db_pack_qty = product['pack_qty'] or 1
+            if tx_type == 'out' and qty > product['quantity']:
+                raise ValueError(f"'{product['name']}' барааны үлдэгдэл хүрэлцэхгүй байна (Үлдэгдэл: {product['quantity']} ш)")
+            
+            # (Packs are derived, so we don't need to validate a separate 'packs' input anymore)
             total_amount += qty * price
 
         # Create Bundle
@@ -679,7 +725,11 @@ def add_transaction_bundle():
             qty = int(item.get('quantity', 0))
             if qty <= 0: continue
             
-            price = float(item.get('price', 0))
+            # Fetch price again or use from validated set
+            p = conn.execute('SELECT price FROM products WHERE id = ?', (p_id,)).fetchone()
+            # For "in" (Add Stock), use DB price. For "out" (Sell), use frontend price.
+            price = p['price'] if tx_type == 'in' else float(item.get('price', 0))
+            
             has_vat = 1 if item.get('has_vat') else 0
             
             delta = qty if tx_type == 'in' else -qty
@@ -850,13 +900,10 @@ def get_stats_revenue():
     period = request.args.get('period', 'monthly')
     conn = get_db()
     
-    if period == 'weekly':
-        interval = '-7 days'
-        group_by = "strftime('%Y-%m-%d', created_at)"
-    elif period == 'annually':
+    if period == 'annually':
         interval = '-1 year'
         group_by = "strftime('%Y-%m', created_at)"
-    else:  # monthly
+    else:  # monthly (default)
         interval = '-30 days'
         group_by = "strftime('%Y-%m-%d', created_at)"
 
@@ -1114,6 +1161,13 @@ def import_products_excel():
         pack_qty_excel = r['qty_new']
         qty_excel = r['qty_rem'] if r['qty_rem'] > 0 else r['qty_new']
         price = r['price']
+        
+        # Validation
+        if pack_qty_excel > 0 and qty_excel < pack_qty_excel:
+            errors.append(f"'{name}' - Үлдэгдэл нь багцын тооноос бага байж болохгүй")
+            skipped += 1
+            continue
+            
         image_file = r.get('image_file')
 
         # Resolve location_id from name
