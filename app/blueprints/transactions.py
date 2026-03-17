@@ -104,3 +104,125 @@ def add_transaction():
         return jsonify({'error': str(e)}), 500
     finally:
         conn.close()
+
+@transactions_bp.route('/transactions/move', methods=['POST'])
+def move_products():
+    if not login_required():
+        return unauthorized()
+
+    data = request.json or {}
+    from_location_id = data.get('from_location_id')
+    to_location_id = data.get('to_location_id')
+    items = data.get('items', [])
+    note = data.get('note', '')
+
+    if not from_location_id or not to_location_id:
+        return jsonify({'error': 'Агуулах сонгоно уу'}), 400
+    if str(from_location_id) == str(to_location_id):
+        return jsonify({'error': 'Ижил агуулах руу зөөх боломжгүй'}), 400
+    if not items:
+        return jsonify({'error': 'Бараа сонгоогүй байна'}), 400
+
+    conn = get_db()
+    try:
+        # Validate locations exist
+        from_loc = conn.execute('SELECT id, name FROM locations WHERE id=?', (from_location_id,)).fetchone()
+        to_loc = conn.execute('SELECT id, name FROM locations WHERE id=?', (to_location_id,)).fetchone()
+        if not from_loc or not to_loc:
+            return jsonify({'error': 'Агуулах олдсонгүй'}), 404
+
+        # Create two bundles (move) with total_amount=0 so stats/revenue are unaffected
+        move_note = f"Зөөвөрлөлт: {from_loc['name']} → {to_loc['name']}"
+        if note:
+            move_note = f"{move_note}. {note}"
+
+        out_cur = conn.execute(
+            'INSERT INTO transaction_bundles (type, total_amount, note, created_by) VALUES (?, ?, ?, ?)',
+            ('move', 0, move_note, session['user_id'])
+        )
+        out_bundle_id = out_cur.lastrowid
+
+        in_cur = conn.execute(
+            'INSERT INTO transaction_bundles (type, total_amount, note, created_by) VALUES (?, ?, ?, ?)',
+            ('move', 0, move_note, session['user_id'])
+        )
+        in_bundle_id = in_cur.lastrowid
+
+        moved_lines = 0
+
+        for it in items:
+            src_pid = it.get('product_id')
+            qty = safe_int(it.get('quantity'), 0)
+            if not src_pid or qty <= 0:
+                continue
+
+            src = conn.execute('SELECT * FROM products WHERE id=? AND location_id=?', (src_pid, from_location_id)).fetchone()
+            if not src:
+                return jsonify({'error': 'Эх агуулахад бараа олдсонгүй'}), 400
+            if qty > safe_int(src['quantity'], 0):
+                return jsonify({'error': f"Үлдэгдэл хүрэлцэхгүй байна: {src['name']}"}), 400
+
+            # Find matching destination product in target location (barcode preferred)
+            dest = None
+            if src['barcode']:
+                dest = conn.execute(
+                    "SELECT * FROM products WHERE location_id=? AND barcode=? AND barcode!='' LIMIT 1",
+                    (to_location_id, src['barcode'])
+                ).fetchone()
+            if not dest:
+                dest = conn.execute(
+                    "SELECT * FROM products WHERE location_id=? AND name=? LIMIT 1",
+                    (to_location_id, src['name'])
+                ).fetchone()
+
+            if not dest:
+                # Create destination product copy (quantity starts at 0)
+                cur = conn.execute('''
+                    INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, image)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    src['name'],
+                    src['brand'] or '',
+                    src['barcode'] or '',
+                    src['unit'] or '',
+                    src['category'] or '',
+                    safe_int(src['pack_qty'], 0),
+                    0,
+                    safe_float(src['price'], 0),
+                    safe_float(src['price_cn'], 0),
+                    0,
+                    to_location_id,
+                    src['description'] or '',
+                    src['image']
+                ))
+                dest_id = cur.lastrowid
+            else:
+                dest_id = dest['id']
+
+            # Update stocks
+            conn.execute('UPDATE products SET quantity = quantity - ? WHERE id=?', (qty, src_pid))
+            conn.execute('UPDATE products SET quantity = quantity + ? WHERE id=?', (qty, dest_id))
+
+            # Record transaction items (no VAT needed here)
+            price = safe_float(src['price'], 0)
+            conn.execute(
+                'INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',
+                (out_bundle_id, src_pid, qty, price, 0)
+            )
+            conn.execute(
+                'INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',
+                (in_bundle_id, dest_id, qty, price, 0)
+            )
+            moved_lines += 1
+
+        if moved_lines == 0:
+            conn.rollback()
+            return jsonify({'error': 'Зөөх бараа олдсонгүй'}), 400
+
+        conn.commit()
+        return jsonify({'message': f'{moved_lines} бараа амжилттай зөөлөө'})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
