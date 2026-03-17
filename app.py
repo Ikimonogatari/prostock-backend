@@ -28,7 +28,7 @@ if not os.path.exists(UPLOAD_FOLDER):
 # manager → бараа нэмэх, засах, зарлага, орлого оруулах боломжтой (устгах БҮҮ)
 # user    → зөвхөн зарлага/орлого оруулах боломжтой (харах + гүйлгээ хийх)
 
-ROLE_LEVELS = {'user': 1, 'manager': 2, 'admin': 3}
+ROLE_LEVELS = {'user': 1, 'admin': 2}
 
 
 def has_role(min_role: str) -> bool:
@@ -37,6 +37,11 @@ def has_role(min_role: str) -> bool:
 
 def login_required():
     return 'user_id' in session
+
+
+def unauthorized():
+    session.clear()
+    return jsonify({'error': 'Нэвтрэх эрхгүй байна'}), 401
 
 
 def get_db():
@@ -219,6 +224,7 @@ def login():
         session['username'] = user['username']
         session['role'] = user['role']
         return jsonify({'message': 'Амжилттай нэвтэрлээ', 'username': user['username'], 'role': user['role']})
+    session.clear()
     return jsonify({'error': 'Нэвтрэх нэр эсвэл нууц үг буруу байна'}), 401
 
 
@@ -231,14 +237,14 @@ def logout():
 @app.route('/api/me', methods=['GET'])
 def me():
     if not login_required():
-        return jsonify({'error': 'Нэвтрээгүй байна'}), 401
+        return unauthorized()
     return jsonify({'username': session['username'], 'role': session['role']})
 
 
 @app.route('/api/change-password', methods=['POST'])
 def change_password():
     if not login_required():
-        return jsonify({'error': 'Нэвтрээгүй байна'}), 401
+        return unauthorized()
     data = request.get_json()
     old_pw = data.get('old_password', '')
     new_pw = data.get('new_password', '')
@@ -251,6 +257,7 @@ def change_password():
                         (session['user_id'], hash_password(old_pw))).fetchone()
     if not user:
         conn.close()
+        session.clear()
         return jsonify({'error': 'Хуучин нууц үг буруу байна'}), 401
     conn.execute('UPDATE users SET password = ? WHERE id = ?',
                  (hash_password(new_pw), session['user_id']))
@@ -279,7 +286,7 @@ def add_user():
     username = data.get('username', '').strip()
     password = data.get('password', '')
     role = data.get('role', 'user')
-    if role not in ('user', 'manager', 'admin'):
+    if role not in ('user', 'admin'):
         return jsonify({'error': 'Буруу эрх'}), 400
     if not username or not password:
         return jsonify({'error': 'Мэдээлэл дутуу байна'}), 400
@@ -318,7 +325,7 @@ def change_user_role(uid):
         return jsonify({'error': 'Өөрийн эрхийг өөрчлөх боломжгүй'}), 400
     data = request.get_json()
     role = data.get('role', '')
-    if role not in ('user', 'manager', 'admin'):
+    if role not in ('user', 'admin'):
         return jsonify({'error': 'Буруу эрх'}), 400
     conn = get_db()
     conn.execute('UPDATE users SET role = ? WHERE id = ?', (role, uid))
@@ -332,7 +339,7 @@ def change_user_role(uid):
 @app.route('/api/products', methods=['GET'])
 def get_products():
     if not login_required():
-        return jsonify({'error': 'Нэвтрээгүй байна'}), 401
+        return unauthorized()
     search = request.args.get('search', '')
     category = request.args.get('category', '')
     location_id = request.args.get('location_id')
@@ -363,7 +370,7 @@ def get_products():
 
 @app.route('/api/products', methods=['POST'])
 def add_product():
-    if not login_required() or not has_role('manager'):
+    if not login_required() or not has_role('admin'):
         return jsonify({'error': 'Бараа нэмэх эрх байхгүй'}), 403
     
     # Handle multipart/form-data if file is present
@@ -375,20 +382,34 @@ def add_product():
         image_file = None
 
     name = data.get('name', '').strip()
-    if not name:
-        return jsonify({'error': 'Барааны нэр заавал оруулна уу'}), 400
-    
     brand = data.get('brand', '').strip()
     barcode = data.get('barcode', '').strip()
     unit = data.get('unit', '').strip()
     category = data.get('category', '').strip()
-    pack_qty = max(0, int(data.get('pack_qty', 0)))
-    quantity = max(0, int(data.get('quantity', 0)))
-    price = max(0.0, float(data.get('price', 0)))
-    price_cn = max(0.0, float(data.get('price_cn', 0)))
-    has_vat = 1 if data.get('has_vat') == 'true' or data.get('has_vat') == 1 or data.get('has_vat') is True else 0
     location_id = data.get('location_id')
     description = data.get('description', '').strip()
+    
+    # Strict Validation
+    if not name:
+        return jsonify({'error': 'Барааны нэр заавал оруулна уу'}), 400
+    if not unit:
+        return jsonify({'error': 'Хэмжих нэгж заавал оруулна уу'}), 400
+    if not location_id:
+        return jsonify({'error': 'Агуулах заавал оруулна уу'}), 400
+    
+    try:
+        pack_qty = int(data.get('pack_qty', 0))
+        quantity = int(data.get('quantity', 0))
+        price = float(data.get('price', 0))
+        price_cn = float(data.get('price_cn', 0))
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Тоон мэдээлэл буруу байна'}), 400
+        
+    if pack_qty < 0: return jsonify({'error': 'Багцын тоо 0-ээс бага байж болохгүй'}), 400
+    if quantity < 0: return jsonify({'error': 'Үлдэгдэл 0-ээс бага байж болохгүй'}), 400
+    if price < 0: return jsonify({'error': 'Нэгж үнэ 0-ээс бага байж болохгүй'}), 400
+
+    has_vat = 1 if data.get('has_vat') == 'true' or data.get('has_vat') == 1 or data.get('has_vat') is True else 0
     
     img_name = None
     if image_file and image_file.filename:
@@ -413,7 +434,7 @@ def add_product():
 
 @app.route('/api/products/<int:pid>', methods=['PUT'])
 def update_product(pid):
-    if not login_required() or not has_role('manager'):
+    if not login_required() or not has_role('admin'):
         return jsonify({'error': 'Бараа засах эрх байхгүй'}), 403
     
     if request.content_type and 'multipart/form-data' in request.content_type:
@@ -424,20 +445,34 @@ def update_product(pid):
         image_file = None
 
     name = data.get('name', '').strip()
-    if not name:
-        return jsonify({'error': 'Барааны нэр заавал оруулна уу'}), 400
-    
     brand = data.get('brand', '').strip()
     barcode = data.get('barcode', '').strip()
     unit = data.get('unit', '').strip()
     category = data.get('category', '').strip()
-    pack_qty = max(0, int(data.get('pack_qty', 0)))
-    quantity = max(0, int(data.get('quantity', 0)))
-    price = max(0.0, float(data.get('price', 0)))
-    price_cn = max(0.0, float(data.get('price_cn', 0)))
-    has_vat = 1 if data.get('has_vat') == 'true' or data.get('has_vat') == 1 or data.get('has_vat') is True else 0
     location_id = data.get('location_id')
     description = data.get('description', '').strip()
+
+    # Strict Validation
+    if not name:
+        return jsonify({'error': 'Барааны нэр заавал оруулна уу'}), 400
+    if not unit:
+        return jsonify({'error': 'Хэмжих нэгж заавал оруулна уу'}), 400
+    if not location_id:
+        return jsonify({'error': 'Агуулах заавал оруулна уу'}), 400
+    
+    try:
+        pack_qty = int(data.get('pack_qty', 0))
+        quantity = int(data.get('quantity', 0))
+        price = float(data.get('price', 0))
+        price_cn = float(data.get('price_cn', 0))
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Тоон мэдээлэл буруу байна'}), 400
+
+    if pack_qty < 0: return jsonify({'error': 'Багцын тоо 0-ээс бага байж болохгүй'}), 400
+    if quantity < 0: return jsonify({'error': 'Үлдэгдэл 0-ээс бага байж болохгүй'}), 400
+    if price < 0: return jsonify({'error': 'Нэгж үнэ 0-ээс бага байж болохгүй'}), 400
+
+    has_vat = 1 if data.get('has_vat') == 'true' or data.get('has_vat') == 1 or data.get('has_vat') is True else 0
     
     conn = get_db()
     existing = conn.execute('SELECT image FROM products WHERE id = ?', (pid,)).fetchone()
@@ -470,7 +505,18 @@ def update_product(pid):
 def delete_product(pid):
     if not login_required() or not has_role('admin'):
         return jsonify({'error': 'Бараа устгах эрх байхгүй (admin шаардлагатай)'}), 403
+
+    data = request.get_json()
+    password = data.get('password')
+    if not password:
+        return jsonify({'error': 'Нууц үг заавал оруулна уу'}), 400
+
     conn = get_db()
+    user = conn.execute('SELECT password FROM users WHERE id = ?', (session['user_id'],)).fetchone()
+    if not user or user['password'] != hash_password(password):
+        conn.close()
+        return jsonify({'error': 'Нууц үг буруу байна'}), 401
+
     conn.execute('DELETE FROM products WHERE id = ?', (pid,))
     conn.commit()
     conn.close()
@@ -480,7 +526,7 @@ def delete_product(pid):
 @app.route('/api/categories', methods=['GET'])
 def get_categories_db():
     if not login_required():
-        return jsonify({'error': 'Нэвтрээгүй байна'}), 401
+        return unauthorized()
     conn = get_db()
     cats = conn.execute("SELECT * FROM categories ORDER BY name").fetchall()
     conn.close()
@@ -489,7 +535,7 @@ def get_categories_db():
 
 @app.route('/api/categories', methods=['POST'])
 def add_category():
-    if not login_required() or not has_role('manager'):
+    if not login_required() or not has_role('admin'):
         return jsonify({'error': 'Зөвшөөрөл байхгүй'}), 403
     data = request.get_json()
     name = data.get('name', '').strip()
@@ -509,7 +555,7 @@ def add_category():
 
 @app.route('/api/categories/<int:cid>', methods=['PUT'])
 def update_category(cid):
-    if not login_required() or not has_role('manager'):
+    if not login_required() or not has_role('admin'):
         return jsonify({'error': 'Зөвшөөрөл байхгүй'}), 403
     data = request.get_json()
     name = data.get('name', '').strip()
@@ -544,7 +590,7 @@ def delete_category(cid):
 @app.route('/api/locations', methods=['GET'])
 def get_locations():
     if not login_required():
-        return jsonify({'error': 'Нэвтрээгүй байна'}), 401
+        return unauthorized()
     conn = get_db()
     locs = conn.execute("SELECT * FROM locations ORDER BY name").fetchall()
     conn.close()
@@ -553,7 +599,7 @@ def get_locations():
 
 @app.route('/api/locations', methods=['POST'])
 def add_location():
-    if not login_required() or not has_role('manager'):
+    if not login_required() or not has_role('admin'):
         return jsonify({'error': 'Зөвшөөрөл байхгүй'}), 403
     data = request.get_json()
     name = data.get('name', '').strip()
@@ -593,7 +639,7 @@ def delete_location(lid):
 @app.route('/api/transactions', methods=['POST'])
 def add_transaction_bundle():
     if not login_required():
-        return jsonify({'error': 'Нэвтрээгүй байна'}), 401
+        return unauthorized()
     data = request.get_json()
     items = data.get('items', [])
     tx_type = data.get('type')  # 'in' or 'out'
@@ -652,7 +698,7 @@ def add_transaction_bundle():
 @app.route('/api/brands', methods=['GET'])
 def get_brands():
     if not login_required():
-        return jsonify({'error': 'Нэвтрээгүй байна'}), 401
+        return unauthorized()
     conn = get_db()
     brands = conn.execute('SELECT * FROM brands ORDER BY name ASC').fetchall()
     conn.close()
@@ -660,7 +706,7 @@ def get_brands():
 
 @app.route('/api/brands', methods=['POST'])
 def add_brand():
-    if not login_required() or not has_role('manager'):
+    if not login_required() or not has_role('admin'):
         return jsonify({'error': 'Зөвшөөрөл байхгүй'}), 403
     data = request.get_json()
     name = data.get('name', '').strip()
@@ -682,7 +728,7 @@ def add_brand():
 
 @app.route('/api/brands/<int:bid>', methods=['PUT'])
 def update_brand(bid):
-    if not login_required() or not has_role('manager'):
+    if not login_required() or not has_role('admin'):
         return jsonify({'error': 'Зөвшөөрөл байхгүй'}), 403
     data = request.get_json()
     name = data.get('name', '').strip()
@@ -720,7 +766,7 @@ def delete_brand(bid):
 @app.route('/api/transactions', methods=['GET'])
 def get_transactions():
     if not login_required():
-        return jsonify({'error': 'Нэвтрээгүй байна'}), 401
+        return unauthorized()
     tx_type = request.args.get('type', '')
     start_date = request.args.get('start_date', '')
     end_date = request.args.get('end_date', '')
@@ -768,7 +814,7 @@ def get_transactions():
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
     if not login_required():
-        return jsonify({'error': 'Нэвтрээгүй байна'}), 401
+        return unauthorized()
     conn = get_db()
     total_products = conn.execute('SELECT COUNT(*) as c FROM products').fetchone()['c']
     total_qty = conn.execute('SELECT COALESCE(SUM(quantity),0) as s FROM products').fetchone()['s']
@@ -799,7 +845,7 @@ def get_stats():
 @app.route('/api/stats/revenue', methods=['GET'])
 def get_stats_revenue():
     if not login_required():
-        return jsonify({'error': 'Нэвтрээгүй байна'}), 401
+        return unauthorized()
     
     period = request.args.get('period', 'monthly')
     conn = get_db()
@@ -851,7 +897,7 @@ def get_stats_revenue():
 @app.route('/api/stats/product-trend', methods=['GET'])
 def get_stats_product_trend():
     if not login_required():
-        return jsonify({'error': 'Нэвтрээгүй байна'}), 401
+        return unauthorized()
     
     period = request.args.get('period', 'monthly')
     conn = get_db()
@@ -903,6 +949,7 @@ def parse_excel(file_bytes):
         'price_cn': ['урдаас ирсэн үнэ юань', 'юань', 'үнэ юань'],
         'price':    ['төгрөг', 'үнэ төгрөг', 'мнт', 'үнийн дүн'],
         'brand':    ['брэнд'],
+        'category': ['ангилал', 'төрөл'],
         'code':     ['бараа код', 'код', 'баркод'],
         'image_col':['зураг'],
         'location': ['агуулах'],
@@ -952,14 +999,20 @@ def parse_excel(file_bytes):
                     print(f"Image extraction error: {e}")
 
     rows = []
-    for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+    empty_row_count = 0
+    for row_idx, row in enumerate(ws.iter_rows(min_row=header_row + 1), start=header_row + 1):
         def g(field):
             idx = col_map.get(field)
-            return row[idx - 1] if idx and idx <= len(row) else None
+            return row[idx - 1].value if idx and idx <= len(row) else None
 
         name = g('name')
         if not name or str(name).strip() == '':
+            empty_row_count += 1
+            if empty_row_count >= 10: # Stop after 10 empty rows for performance
+                break
             continue
+        
+        empty_row_count = 0 # Reset if name is found
         name = str(name).strip()
 
         def clean_num(val):
@@ -982,8 +1035,13 @@ def parse_excel(file_bytes):
             price = clean_num(g('price'))
         except:
             price = 0.0
+        try:
+            price_cn = clean_num(g('price_cn'))
+        except:
+            price_cn = 0.0
 
         brand = str(g('brand') or '').strip()
+        category = str(g('category') or '').strip()
         unit = str(g('unit') or '').strip()
         code = g('code')
         code = str(code) if code is not None else ''
@@ -999,6 +1057,7 @@ def parse_excel(file_bytes):
         rows.append({
             'name': name,
             'brand': brand,
+            'category': category,
             'unit': unit,
             'code': code,
             'qty_new': qty_new,
@@ -1023,7 +1082,7 @@ def parse_excel(file_bytes):
 @app.route('/api/import/products', methods=['POST'])
 def import_products_excel():
     """Excel-ээс бараа импортлох (manager+)"""
-    if not login_required() or not has_role('manager'):
+    if not login_required() or not has_role('admin'):
         return jsonify({'error': 'Эрх байхгүй'}), 403
     if 'file' not in request.files:
         return jsonify({'error': 'Файл олдсонгүй'}), 400
@@ -1050,34 +1109,54 @@ def import_products_excel():
         brand = r['brand'] or ''
         barcode = r['code'] or ''
         unit = r['unit'] or ''
-        category = brand
-        location = r.get('location', 'Үндсэн Агуулах') or 'Үндсэн Агуулах'
-        desc = ''
-        pack_qty = r['qty_new']  # Тоо Ширхэг = number of packages
-        qty = r['qty_rem'] if r['qty_rem'] > 0 else r['qty_new']  # Үлдэгдэл = total items
+        category = r['category'] or brand or 'Бусад'
+        location_name = r.get('location', 'Үндсэн Агуулах') or 'Үндсэн Агуулах'
+        pack_qty_excel = r['qty_new']
+        qty_excel = r['qty_rem'] if r['qty_rem'] > 0 else r['qty_new']
         price = r['price']
         image_file = r.get('image_file')
 
-        existing = conn.execute('SELECT id, image FROM products WHERE name = ?', (name,)).fetchone()
+        # Resolve location_id from name
+        loc_row = conn.execute('SELECT id FROM locations WHERE name = ?', (location_name,)).fetchone()
+        if not loc_row:
+            # If location doesn't exist, create it to be robust
+            conn.execute('INSERT INTO locations (name) VALUES (?)', (location_name,))
+            loc_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        else:
+            loc_id = loc_row['id']
+
+        # Register Brand if exists and not present
+        if brand:
+            conn.execute('INSERT OR IGNORE INTO brands (name) VALUES (?)', (brand,))
+            
+        # Register Category if exists and not present
+        if category:
+            conn.execute('INSERT OR IGNORE INTO categories (name) VALUES (?)', (category,))
+
+        # Check for existing product by Name AND Barcode
+        existing = conn.execute('SELECT id, pack_qty, quantity, image FROM products WHERE name = ? AND barcode = ?', (name, barcode)).fetchone()
+        
         try:
             if existing:
-                if mode == 'skip':
-                    skipped += 1
-                    continue
-                # Update
-                # If new image provided, use it. Otherwise keep old.
+                # 1. Match Found: Increment stock and update location
+                new_pack_qty = existing['pack_qty'] + pack_qty_excel
+                new_qty = existing['quantity'] + qty_excel
+                
+                # Use new image if provided, otherwise keep existing
                 final_img = image_file if image_file else existing['image']
+                
                 conn.execute('''
                     UPDATE products 
-                    SET brand=?, barcode=?, unit=?, category=?, pack_qty=?, quantity=?, price=?, price_cn=?, location=?, image=? 
+                    SET pack_qty=?, quantity=?, location_id=?, location=?, image=? 
                     WHERE id=?
-                ''', (brand, barcode, unit, category, pack_qty, qty, price, r.get('price_cn', 0), location, final_img, existing['id']))
+                ''', (new_pack_qty, new_qty, loc_id, location_name, final_img, existing['id']))
                 updated += 1
             else:
+                # 2. New Product: Create entry
                 conn.execute('''
-                    INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, location, image) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (name, brand, barcode, unit, category, pack_qty, qty, price, r.get('price_cn', 0), location, image_file))
+                    INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, location_id, location, image) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (name, brand, barcode, unit, category, pack_qty_excel, qty_excel, price, r.get('price_cn', 0), loc_id, location_name, image_file))
                 added += 1
         except Exception as ex:
             errors.append(f'{name}: {ex}')
@@ -1086,7 +1165,7 @@ def import_products_excel():
     conn.close()
 
     return jsonify({
-        'message': f'{added} бараа нэмэгдлээ, {updated} шинэчлэгдлээ, {skipped} алгасагдлаа',
+        'message': f'{added} шинэ бараа бүртгэгдлээ, {updated} барааны үлдэгдэл нэмэгдлээ',
         'added': added, 'updated': updated, 'skipped': skipped,
         'errors': errors[:10]
     })
@@ -1096,7 +1175,7 @@ def import_products_excel():
 def import_transactions_excel():
     """Excel-ээс гүйлгээ (орлого/зарлага) импортлох"""
     if not login_required():
-        return jsonify({'error': 'Нэвтрээгүй байна'}), 401
+        return unauthorized()
     if 'file' not in request.files:
         return jsonify({'error': 'Файл олдсонгүй'}), 400
     f = request.files['file']
@@ -1174,7 +1253,7 @@ def import_transactions_excel():
 def export_products():
     """Бүх барааг Excel файлаар татах"""
     if not login_required():
-        return jsonify({'error': 'Нэвтрээгүй байна'}), 401
+        return unauthorized()
     if not HAS_OPENPYXL:
         return jsonify({'error': 'openpyxl суулгаагүй байна'}), 500
 
