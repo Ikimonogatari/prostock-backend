@@ -3,8 +3,7 @@ version: '3.8'
 services:
   backend:
     build: .
-    ports:
-      - "5000:5000"
+    # Removed host ports to avoid conflicts; Nginx handles public access
     volumes:
       - ./uploads:/app/uploads
       - ./database.db:/app/database.db
