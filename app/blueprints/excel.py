@@ -161,11 +161,12 @@ def import_products():
     bundle_id = None
     try:
         cur = conn.execute('INSERT INTO transaction_bundles (type, total_amount, note, created_by) VALUES (?, ?, ?, ?)',
-                           ('fix', 0, 'Excel импортоор барааны үлдэгдэл өөрчилсөн', session.get('user_id')))
+                           ('in', 0, 'Excel импортоор барааны үлдэгдэл өөрчилсөн', session.get('user_id')))
         bundle_id = cur.lastrowid
     except:
         pass
         
+    total_bundle_amount = 0
     for r in rows:
         try:
             name, brand, barcode = r['name'], r['brand'], r['code']
@@ -197,6 +198,8 @@ def import_products():
                 if bundle_id and qty_excel != 0:
                     conn.execute('INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',
                                  (bundle_id, existing['id'], qty_excel, price, 0))
+                    if qty_excel > 0:
+                        total_bundle_amount += qty_excel * price
                 updated += 1
             else:
                 cursor = conn.execute('''
@@ -208,8 +211,13 @@ def import_products():
                 if bundle_id and qty_excel != 0:
                     conn.execute('INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',
                                  (bundle_id, new_id, qty_excel, price, 0))
+                    if qty_excel > 0:
+                        total_bundle_amount += qty_excel * price
                 added += 1
         except Exception as ex: errors.append(f'{r["name"]}: {ex}')
+
+    if bundle_id:
+        conn.execute('UPDATE transaction_bundles SET total_amount = ? WHERE id = ?', (total_bundle_amount, bundle_id))
 
     conn.commit(); conn.close()
     return jsonify({'message': f'{added} нэмэгдсэн, {updated} шинэчлэгдсэн', 'added': added, 'updated': updated, 'errors': errors[:10]})

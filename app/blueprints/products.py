@@ -71,8 +71,9 @@ def add_product():
         
         # Add transaction logic
         if quantity > 0:
+            total_amount = quantity * price
             cur = conn.execute('INSERT INTO transaction_bundles (type, total_amount, note, created_by) VALUES (?, ?, ?, ?)',
-                               ('fix', 0, 'Шинэ бараа бүртгэл', session.get('user_id')))
+                               ('in', total_amount, 'Шинэ бараа бүртгэл', session.get('user_id')))
             bundle_id = cur.lastrowid
             conn.execute('INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',
                          (bundle_id, pid, quantity, price, has_vat))
@@ -148,11 +149,12 @@ def update_product(pid):
         # Track manual quantity change as 'fix'
         if quantity != old_qty:
             diff = quantity - old_qty
+            total_amount = diff * price
             cursor = conn.execute('INSERT INTO transaction_bundles (type, total_amount, note, created_by) VALUES (?, ?, ?, ?)',
-                                 ('fix', 0, 'Барааны мэдээлэл засварласнаар үлдэгдэл өөрчлөгдлөө', session.get('user_id')))
+                                 ('fix', total_amount, 'Барааны мэдээлэл засварласнаар үлдэгдэл өөрчлөгдлөө', session.get('user_id')))
             bundle_id = cursor.lastrowid
             conn.execute('INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',
-                         (bundle_id, pid, diff, 0, 0))
+                         (bundle_id, pid, diff, price, has_vat))
                          
         conn.commit()
         return jsonify({'message': 'Бараа шинэчлэгдлээ'})
