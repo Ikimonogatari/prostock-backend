@@ -34,6 +34,23 @@ def get_products():
     conn.close()
     return jsonify([dict(p) for p in products])
 
+@products_bp.route('/catalog', methods=['GET'])
+def get_catalog():
+    if not login_required():
+        return unauthorized()
+    
+    conn = get_db()
+    # Fetch distinct products globally by barcode or name
+    query = '''
+        SELECT name, brand, barcode, unit, category, description, image, price, price_cn, has_vat, pack_qty
+        FROM products 
+        GROUP BY COALESCE(NULLIF(barcode, ''), name)
+        ORDER BY name ASC
+    '''
+    catalog = conn.execute(query).fetchall()
+    conn.close()
+    return jsonify([dict(c) for c in catalog])
+
 @products_bp.route('/products', methods=['POST'])
 def add_product():
     if not login_required() or not has_role('manager'):
@@ -62,6 +79,17 @@ def add_product():
             image_file.save(os.path.join(current_app.config['UPLOAD_FOLDER'], img_name))
 
     conn = get_db()
+    
+    # Validation: Check if it already exists in THIS location
+    existing = conn.execute('''
+        SELECT id FROM products 
+        WHERE location_id = ? AND ((barcode != '' AND barcode = ?) OR name = ?)
+    ''', (location_id, barcode, name)).fetchone()
+    
+    if existing:
+        conn.close()
+        return jsonify({'error': 'Сонгосон агуулахад энэ бараа (ижил нэр эсвэл кодтой) аль хэдийн бүртгэгдсэн байна.'}), 400
+        
     try:
         cursor = conn.execute('''
             INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, image) 
@@ -77,7 +105,16 @@ def add_product():
             bundle_id = cur.lastrowid
             conn.execute('INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',
                          (bundle_id, pid, quantity, price, has_vat))
-                         
+            
+        # Global sync: If barcode or name exists elsewhere, sync their global specs to match this one
+        if str(barcode).strip() or str(name).strip():
+            sync_query = '''
+                UPDATE products 
+                SET brand=?, unit=?, category=?, description=?, image=?, has_vat=? 
+                WHERE (barcode=? AND barcode!='') OR (name=? AND name!='')
+            '''
+            conn.execute(sync_query, (brand, unit, category, description, img_name, has_vat, barcode, name))
+
         conn.commit()
         return jsonify({'message': 'Бараа амжилттай нэмэгдлээ', 'id': pid})
     except Exception as e:
@@ -145,6 +182,15 @@ def update_product(pid):
             SET name=?, brand=?, barcode=?, unit=?, category=?, pack_qty=?, quantity=?, price=?, price_cn=?, has_vat=?, location_id=?, description=?, image=?
             WHERE id=?
         ''', (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, img_name, pid))
+        
+        # Global sync: Sync global specs to other products sharing this barcode or name
+        if str(barcode).strip() or str(name).strip():
+            sync_query = '''
+                UPDATE products 
+                SET brand=?, unit=?, category=?, description=?, image=?, has_vat=?, name=?, barcode=?
+                WHERE id != ? AND ((barcode=? AND barcode!='') OR (name=? AND name!=''))
+            '''
+            conn.execute(sync_query, (brand, unit, category, description, img_name, has_vat, name, barcode, pid, product['barcode'], product['name']))
         
         # Track manual quantity change as 'fix'
         if quantity != old_qty:

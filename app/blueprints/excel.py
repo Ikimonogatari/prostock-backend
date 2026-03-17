@@ -150,6 +150,9 @@ def import_products():
         return jsonify({'error': 'openpyxl суулгаагүй байна'}), 500
 
     file_bytes = f.read()
+    mode = request.form.get('mode', 'update')
+    form_location_id = request.form.get('location_id')
+    
     rows, err = parse_excel(file_bytes)
     if err: return jsonify({'error': err}), 400
 
@@ -177,36 +180,83 @@ def import_products():
             image_file = r['image_file']
 
             # Location
-            loc = conn.execute('SELECT id FROM locations WHERE name = ?', (location_name,)).fetchone()
-            if not loc:
-                conn.execute('INSERT INTO locations (name) VALUES (?)', (location_name,))
-                loc_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
-            else: loc_id = loc['id']
+            if form_location_id:
+                loc_id = int(form_location_id)
+                loc_row = conn.execute('SELECT name FROM locations WHERE id = ?', (loc_id,)).fetchone()
+                location_name = loc_row['name'] if loc_row else 'Үндсэн Агуулах'
+            else:
+                loc = conn.execute('SELECT id FROM locations WHERE name = ?', (location_name,)).fetchone()
+                if not loc:
+                    conn.execute('INSERT INTO locations (name) VALUES (?)', (location_name,))
+                    loc_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+                else: 
+                    loc_id = loc['id']
 
             # Metadata
             if brand: conn.execute('INSERT OR IGNORE INTO brands (name) VALUES (?)', (brand,))
             if category: conn.execute('INSERT OR IGNORE INTO categories (name) VALUES (?)', (category,))
 
-            existing = conn.execute('SELECT id, pack_qty, quantity, image FROM products WHERE name = ? AND barcode = ?', (name, barcode)).fetchone()
-            if existing:
-                new_pack = existing['pack_qty'] + pack_qty_excel
-                new_qty = existing['quantity'] + qty_excel
-                final_img = image_file or existing['image']
-                conn.execute('UPDATE products SET pack_qty=?, quantity=?, location_id=?, location=?, image=? WHERE id=?',
-                             (new_pack, new_qty, loc_id, location_name, final_img, existing['id']))
+            # 1. Check if the exact product exists at this local location
+            # Note: Barcode might be empty, so we check (barcode OR name) AND location_id
+            existing_local = conn.execute('''
+                SELECT id, pack_qty, quantity, image 
+                FROM products 
+                WHERE location_id = ? AND ((barcode != '' AND barcode = ?) OR name = ?)
+            ''', (loc_id, barcode, name)).fetchone()
+
+            if existing_local:
+                new_pack = existing_local['pack_qty'] + pack_qty_excel
+                new_qty = existing_local['quantity'] + qty_excel
+                final_img = image_file or existing_local['image']
+                conn.execute('UPDATE products SET pack_qty=?, quantity=?, image=? WHERE id=?',
+                             (new_pack, new_qty, final_img, existing_local['id']))
                 
                 if bundle_id and qty_excel != 0:
                     conn.execute('INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',
-                                 (bundle_id, existing['id'], qty_excel, price, 0))
+                                 (bundle_id, existing_local['id'], qty_excel, price, 0))
                     if qty_excel > 0:
                         total_bundle_amount += qty_excel * price
                 updated += 1
             else:
+                # 2. It doesn't exist locally. But does it exist globally? Let's borrow its stats if so.
+                existing_global = conn.execute('''
+                    SELECT name, brand, barcode, unit, category, description, image, has_vat
+                    FROM products 
+                    WHERE ((barcode != '' AND barcode = ?) OR name = ?)
+                    LIMIT 1
+                ''', (barcode, name)).fetchone()
+
+                if existing_global:
+                    final_name = existing_global['name']
+                    final_brand = existing_global['brand']
+                    final_barcode = existing_global['barcode']
+                    final_unit = existing_global['unit']
+                    final_category = existing_global['category']
+                    final_image = image_file or existing_global['image']
+                    final_vat = existing_global['has_vat']
+                else:
+                    final_name = name
+                    final_brand = brand
+                    final_barcode = barcode
+                    final_unit = r.get('unit', '')
+                    final_category = category
+                    final_image = image_file
+                    final_vat = 0
+
                 cursor = conn.execute('''
-                    INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, location_id, location, image) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (name, brand, barcode, r['unit'], category, pack_qty_excel, qty_excel, price, price_cn, loc_id, location_name, image_file))
+                    INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, location, image) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (final_name, final_brand, final_barcode, final_unit, final_category, pack_qty_excel, qty_excel, price, price_cn, final_vat, loc_id, location_name, final_image))
                 new_id = cursor.lastrowid
+                
+                # Global sync: If we actually introduced new data (like an image), let's sync it back globally
+                if final_image or final_brand or final_category:
+                     sync_query = '''
+                         UPDATE products 
+                         SET brand=?, category=?, image=?, has_vat=? 
+                         WHERE id != ? AND ((barcode=? AND barcode!='') OR (name=? AND name!=''))
+                     '''
+                     conn.execute(sync_query, (final_brand, final_category, final_image, final_vat, new_id, final_barcode, final_name))
                 
                 if bundle_id and qty_excel != 0:
                     conn.execute('INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',

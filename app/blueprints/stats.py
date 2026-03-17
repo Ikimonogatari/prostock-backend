@@ -8,19 +8,26 @@ stats_bp = Blueprint('stats', __name__)
 def get_stats():
     if not login_required():
         return unauthorized()
+    location_id = request.args.get('location_id', '')
+    p_filter = " AND location_id = ?" if location_id else ""
+    p_params = (location_id,) if location_id else ()
+    
+    tx_filter = " AND EXISTS (SELECT 1 FROM transaction_items ti JOIN products p ON ti.product_id = p.id WHERE ti.bundle_id = transaction_bundles.id AND p.location_id = ?)" if location_id else ""
+    tx_params = (location_id,) if location_id else ()
+
     conn = get_db()
-    total_products = conn.execute('SELECT COUNT(*) as c FROM products').fetchone()['c']
-    total_qty = conn.execute('SELECT COALESCE(SUM(quantity),0) as s FROM products').fetchone()['s']
-    total_value = conn.execute('SELECT COALESCE(SUM(quantity*price),0) as v FROM products').fetchone()['v']
+    total_products = conn.execute(f'SELECT COUNT(*) as c FROM products WHERE 1=1{p_filter}', p_params).fetchone()['c']
+    total_qty = conn.execute(f'SELECT COALESCE(SUM(quantity),0) as s FROM products WHERE 1=1{p_filter}', p_params).fetchone()['s']
+    total_value = conn.execute(f'SELECT COALESCE(SUM(quantity*price),0) as v FROM products WHERE 1=1{p_filter}', p_params).fetchone()['v']
     # Low stock: quantity < 20% of pack_qty (if pack_qty > 0) or quantity <= 5
-    low_stock = conn.execute("SELECT COUNT(*) as c FROM products WHERE (pack_qty > 0 AND quantity < 0.2 * pack_qty) OR (pack_qty = 0 AND quantity <= 5)").fetchone()['c']
+    low_stock = conn.execute(f"SELECT COUNT(*) as c FROM products WHERE ((pack_qty > 0 AND quantity < 0.2 * pack_qty) OR (pack_qty = 0 AND quantity <= 5)){p_filter}", p_params).fetchone()['c']
     
     # Revenue/Expense stats
-    today_out = conn.execute("SELECT COALESCE(SUM(total_amount),0) as s FROM transaction_bundles WHERE type='out' AND date(created_at)=date('now')").fetchone()['s']
-    today_in = conn.execute("SELECT COALESCE(SUM(total_amount),0) as s FROM transaction_bundles WHERE type='in' AND date(created_at)=date('now')").fetchone()['s']
+    today_out = conn.execute(f"SELECT COALESCE(SUM(total_amount),0) as s FROM transaction_bundles WHERE type='out' AND date(created_at)=date('now'){tx_filter}", tx_params).fetchone()['s']
+    today_in = conn.execute(f"SELECT COALESCE(SUM(total_amount),0) as s FROM transaction_bundles WHERE type='in' AND date(created_at)=date('now'){tx_filter}", tx_params).fetchone()['s']
     
-    week_out = conn.execute("SELECT COALESCE(SUM(total_amount),0) as s FROM transaction_bundles WHERE type='out' AND date(created_at) >= date('now', '-7 days')").fetchone()['s']
-    month_out = conn.execute("SELECT COALESCE(SUM(total_amount),0) as s FROM transaction_bundles WHERE type='out' AND date(created_at) >= date('now', '-30 days')").fetchone()['s']
+    week_out = conn.execute(f"SELECT COALESCE(SUM(total_amount),0) as s FROM transaction_bundles WHERE type='out' AND date(created_at) >= date('now', '-7 days'){tx_filter}", tx_params).fetchone()['s']
+    month_out = conn.execute(f"SELECT COALESCE(SUM(total_amount),0) as s FROM transaction_bundles WHERE type='out' AND date(created_at) >= date('now', '-30 days'){tx_filter}", tx_params).fetchone()['s']
 
     conn.close()
     return jsonify({
@@ -42,6 +49,14 @@ def get_stats_revenue():
     period = request.args.get('period', 'monthly')
     conn = get_db()
     
+    location_id = request.args.get('location_id', '')
+    
+    tx_filter = " AND EXISTS (SELECT 1 FROM transaction_items ti JOIN products p ON ti.product_id = p.id WHERE ti.bundle_id = transaction_bundles.id AND p.location_id = ?)" if location_id else ""
+    tx_params = (location_id,) if location_id else ()
+    
+    p_filter = " AND p.location_id = ?" if location_id else ""
+    p_params = (location_id,) if location_id else ()
+
     if period == 'annually':
         interval = '-1 year'
         group_by = "strftime('%Y-%m', created_at)"
@@ -54,27 +69,30 @@ def get_stats_revenue():
                SUM(CASE WHEN type='out' THEN total_amount ELSE 0 END) as income,
                SUM(CASE WHEN type='in' THEN total_amount ELSE 0 END) as expense
         FROM transaction_bundles
-        WHERE created_at >= date('now', '{interval}')
+        WHERE created_at >= date('now', '{interval}'){tx_filter}
         GROUP BY day
         ORDER BY day ASC
     '''
-    rows = conn.execute(query).fetchall()
+    rows = conn.execute(query, tx_params).fetchall()
     
     # Distribution by Location
-    loc_dist = conn.execute('''
+    dist_query = f'''
         SELECT l.name, SUM(p.quantity * p.price) as value
         FROM products p
         JOIN locations l ON p.location_id = l.id
+        WHERE 1=1{p_filter}
         GROUP BY l.name
-    ''').fetchall()
+    '''
+    loc_dist = conn.execute(dist_query, p_params).fetchall()
     
     # Distribution by Category
-    cat_dist = conn.execute('''
+    cat_query = f'''
         SELECT category, SUM(quantity * price) as value
         FROM products p
-        WHERE category != ''
+        WHERE category != ''{p_filter}
         GROUP BY category
-    ''').fetchall()
+    '''
+    cat_dist = conn.execute(cat_query, p_params).fetchall()
     
     conn.close()
     return jsonify({
@@ -91,6 +109,10 @@ def get_stats_product_trend():
     period = request.args.get('period', 'monthly')
     conn = get_db()
     
+    location_id = request.args.get('location_id', '')
+    p_filter = " AND location_id = ?" if location_id else ""
+    p_params = (location_id,) if location_id else ()
+
     if period == 'weekly':
         interval = '-7 days'
         group_by = "strftime('%Y-%m-%d', created_at)"
@@ -104,10 +126,10 @@ def get_stats_product_trend():
     query = f'''
         SELECT {group_by} as date, COUNT(*) as count
         FROM products
-        WHERE created_at >= date('now', '{interval}')
+        WHERE created_at >= date('now', '{interval}'){p_filter}
         GROUP BY date
         ORDER BY date ASC
     '''
-    rows = conn.execute(query).fetchall()
+    rows = conn.execute(query, p_params).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])

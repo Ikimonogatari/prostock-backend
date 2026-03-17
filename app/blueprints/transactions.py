@@ -12,6 +12,7 @@ def get_transactions():
     start_date = request.args.get('start_date', '')
     end_date = request.args.get('end_date', '')
     limit = min(safe_int(request.args.get('limit'), 100), 500)
+    location_id = request.args.get('location_id', '')
 
     conn = get_db()
     query = '''
@@ -21,7 +22,16 @@ def get_transactions():
         WHERE 1=1
     '''
     params = []
-    if tx_type in ('in', 'out'):
+    
+    if location_id:
+        query += ''' AND EXISTS (
+            SELECT 1 FROM transaction_items ti 
+            JOIN products p ON ti.product_id = p.id 
+            WHERE ti.bundle_id = b.id AND p.location_id = ?
+        )'''
+        params.append(location_id)
+        
+    if tx_type in ('in', 'out', 'fix'):
         query += ' AND b.type = ?'
         params.append(tx_type)
     if start_date:
