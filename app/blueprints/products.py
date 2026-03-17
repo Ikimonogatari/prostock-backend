@@ -242,6 +242,46 @@ def delete_product(pid):
     conn.close()
     return jsonify({'message': 'Бараа устгагдлаа'})
 
+@products_bp.route('/products/bulk-delete', methods=['DELETE'])
+def bulk_delete_products():
+    if not login_required() or not has_role('admin'):
+        return jsonify({'error': 'Зөвшөөрөл байхгүй'}), 403
+
+    data = request.get_json(silent=True) or {}
+    ids = data.get('ids') or []
+    if not isinstance(ids, list) or len(ids) == 0:
+        return jsonify({'error': 'IDs шаардлагатай'}), 400
+
+    # Normalize and keep only ints
+    norm_ids = []
+    for x in ids:
+        try:
+            xi = int(x)
+            norm_ids.append(xi)
+        except Exception:
+            continue
+    norm_ids = list(dict.fromkeys(norm_ids))
+    if len(norm_ids) == 0:
+        return jsonify({'error': 'IDs буруу байна'}), 400
+
+    conn = get_db()
+    try:
+        placeholders = ','.join(['?'] * len(norm_ids))
+        rows = conn.execute(f'SELECT id, image FROM products WHERE id IN ({placeholders})', norm_ids).fetchall()
+        images = [r['image'] for r in rows if r and r['image']]
+
+        conn.execute(f'DELETE FROM products WHERE id IN ({placeholders})', norm_ids)
+        for img in images:
+            safe_delete_image(conn, img)
+
+        conn.commit()
+        return jsonify({'message': f'{len(rows)} бараа устгагдлаа', 'deleted': len(rows)})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': f'Устгахад алдаа гарлаа: {str(e)}'}), 500
+    finally:
+        conn.close()
+
 # Categories, Brands, Locations
 @products_bp.route('/categories', methods=['GET'])
 def get_categories():

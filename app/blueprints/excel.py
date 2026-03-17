@@ -278,7 +278,11 @@ def export_products():
     if not HAS_OPENPYXL: return jsonify({'error': 'openpyxl суулгаагүй'}), 500
 
     conn = get_db()
-    products = conn.execute('SELECT * FROM products ORDER BY name ASC').fetchall()
+    location_id = request.args.get('location_id', '')
+    if location_id:
+        products = conn.execute('SELECT * FROM products WHERE location_id = ? ORDER BY name ASC', (location_id,)).fetchall()
+    else:
+        products = conn.execute('SELECT * FROM products ORDER BY name ASC').fetchall()
     conn.close()
 
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Барааны жагсаалт'
