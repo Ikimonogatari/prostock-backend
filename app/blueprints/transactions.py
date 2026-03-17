@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify, session
 from app.database import get_db
-from app.utils import login_required, unauthorized
+from app.utils import login_required, unauthorized, safe_int, safe_float
 
 transactions_bp = Blueprint('transactions', __name__)
 
@@ -11,7 +11,7 @@ def get_transactions():
     tx_type = request.args.get('type', '')
     start_date = request.args.get('start_date', '')
     end_date = request.args.get('end_date', '')
-    limit = min(int(request.args.get('limit', 100)), 500)
+    limit = min(safe_int(request.args.get('limit'), 100), 500)
 
     conn = get_db()
     query = '''
@@ -58,7 +58,7 @@ def add_transaction():
     tx_type = data.get('type') # 'in' or 'out'
     items = data.get('items', [])
     note = data.get('note', '')
-    total_amount = data.get('total_amount', 0)
+    total_amount = safe_float(data.get('total_amount'), 0)
     
     if tx_type not in ('in', 'out'):
         return jsonify({'error': 'Төрөл буруу'}), 400
@@ -75,9 +75,9 @@ def add_transaction():
         # 2. Add items and update quantities
         for it in items:
             p_id = it['product_id']
-            qty = it['quantity']
-            price = it['price']
-            has_vat = it.get('has_vat', 0)
+            qty = safe_int(it['quantity'])
+            price = safe_float(it['price'])
+            has_vat = 1 if it.get('has_vat') else 0
             
             # Update stock
             delta = qty if tx_type == 'in' else -qty

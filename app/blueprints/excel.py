@@ -156,6 +156,16 @@ def import_products():
     added, updated, skipped = 0, 0, 0
     errors = []
     conn = get_db()
+    
+    # Create transaction bundle for import
+    bundle_id = None
+    try:
+        cur = conn.execute('INSERT INTO transaction_bundles (type, total_amount, note, created_by) VALUES (?, ?, ?, ?)',
+                           ('fix', 0, 'Excel импортоор барааны үлдэгдэл өөрчилсөн', session.get('user_id')))
+        bundle_id = cur.lastrowid
+    except:
+        pass
+        
     for r in rows:
         try:
             name, brand, barcode = r['name'], r['brand'], r['code']
@@ -164,10 +174,6 @@ def import_products():
             pack_qty_excel, qty_excel = r['qty_new'], r['qty_rem']
             price, price_cn = r['price'], r['price_cn']
             image_file = r['image_file']
-
-            if pack_qty_excel > 0 and qty_excel < pack_qty_excel:
-                errors.append(f"'{name}' - Үлдэгдэл багцын тооноос бага")
-                skipped += 1; continue
 
             # Location
             loc = conn.execute('SELECT id FROM locations WHERE name = ?', (location_name,)).fetchone()
@@ -187,12 +193,21 @@ def import_products():
                 final_img = image_file or existing['image']
                 conn.execute('UPDATE products SET pack_qty=?, quantity=?, location_id=?, location=?, image=? WHERE id=?',
                              (new_pack, new_qty, loc_id, location_name, final_img, existing['id']))
+                
+                if bundle_id and qty_excel != 0:
+                    conn.execute('INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',
+                                 (bundle_id, existing['id'], qty_excel, price, 0))
                 updated += 1
             else:
-                conn.execute('''
+                cursor = conn.execute('''
                     INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, location_id, location, image) 
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (name, brand, barcode, r['unit'], category, pack_qty_excel, qty_excel, price, price_cn, loc_id, location_name, image_file))
+                new_id = cursor.lastrowid
+                
+                if bundle_id and qty_excel != 0:
+                    conn.execute('INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',
+                                 (bundle_id, new_id, qty_excel, price, 0))
                 added += 1
         except Exception as ex: errors.append(f'{r["name"]}: {ex}')
 

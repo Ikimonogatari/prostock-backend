@@ -42,3 +42,28 @@ def get_me():
         'username': session['username'],
         'role': session['role']
     })
+
+@auth_bp.route('/change-password', methods=['POST'])
+def change_password():
+    if not login_required():
+        return unauthorized()
+    
+    data = request.json
+    old_password = data.get('old_password')
+    new_password = data.get('new_password')
+    
+    if not old_password or not new_password:
+        return jsonify({'error': 'Мэдээлэл дутуу байна'}), 400
+        
+    conn = get_db()
+    user = conn.execute('SELECT * FROM users WHERE id = ?', (session['user_id'],)).fetchone()
+    
+    if user and user['password'] == hash_password(old_password + '123'):
+        conn.execute('UPDATE users SET password = ? WHERE id = ?', 
+                     (hash_password(new_password + '123'), session['user_id']))
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'Нууц үг амжилттай солигдлоо'})
+        
+    conn.close()
+    return jsonify({'error': 'Хуучин нууц үг буруу байна'}), 400

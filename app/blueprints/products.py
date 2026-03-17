@@ -1,6 +1,6 @@
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app, session
 from app.database import get_db
-from app.utils import login_required, unauthorized, has_role
+from app.utils import login_required, unauthorized, has_role, safe_int, safe_float
 import os
 import secrets
 
@@ -44,12 +44,13 @@ def add_product():
     barcode = request.form.get('barcode', '')
     unit = request.form.get('unit', '')
     category = request.form.get('category', '')
-    pack_qty = int(request.form.get('pack_qty', 0))
-    quantity = int(request.form.get('quantity', 0))
-    price = float(request.form.get('price', 0))
-    price_cn = float(request.form.get('price_cn', 0))
-    has_vat = int(request.form.get('has_vat', 0))
-    location_id = request.form.get('location_id')
+    pack_qty = safe_int(request.form.get('pack_qty'), 0)
+    quantity = safe_int(request.form.get('quantity'), 0)
+    price = safe_float(request.form.get('price'), 0.0)
+    price_cn = safe_float(request.form.get('price_cn'), 0.0)
+    has_vat = 1 if request.form.get('has_vat') == 'true' else 0 # FormData sends 'true'/'false'
+    location_id_str = request.form.get('location_id')
+    location_id = int(location_id_str) if location_id_str and str(location_id_str).isdigit() else None
     description = request.form.get('description', '')
     
     image_file = request.files.get('image')
@@ -61,14 +62,29 @@ def add_product():
             image_file.save(os.path.join(current_app.config['UPLOAD_FOLDER'], img_name))
 
     conn = get_db()
-    cursor = conn.execute('''
-        INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, image) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, img_name))
-    pid = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return jsonify({'message': 'Бараа амжилттай нэмэгдлээ', 'id': pid})
+    try:
+        cursor = conn.execute('''
+            INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, image) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, img_name))
+        pid = cursor.lastrowid
+        
+        # Add transaction logic
+        if quantity > 0:
+            cur = conn.execute('INSERT INTO transaction_bundles (type, total_amount, note, created_by) VALUES (?, ?, ?, ?)',
+                               ('fix', 0, 'Шинэ бараа бүртгэл', session.get('user_id')))
+            bundle_id = cur.lastrowid
+            conn.execute('INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',
+                         (bundle_id, pid, quantity, price, has_vat))
+                         
+        conn.commit()
+        return jsonify({'message': 'Бараа амжилттай нэмэгдлээ', 'id': pid})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Бүртгэхэд алдаа гарлаа: {str(e)}'}), 500
+    finally:
+        conn.close()
 
 @products_bp.route('/products/<int:pid>', methods=['PUT', 'PATCH'])
 def update_product(pid):
@@ -90,12 +106,13 @@ def update_product(pid):
         barcode = request.form.get('barcode', product['barcode'])
         unit = request.form.get('unit', product['unit'])
         category = request.form.get('category', product['category'])
-        pack_qty = int(request.form.get('pack_qty', product['pack_qty']))
-        quantity = int(request.form.get('quantity', product['quantity']))
-        price = float(request.form.get('price', product['price']))
-        price_cn = float(request.form.get('price_cn', product['price_cn']))
-        has_vat = int(request.form.get('has_vat', product['has_vat']))
-        location_id = request.form.get('location_id', product['location_id'])
+        pack_qty = safe_int(request.form.get('pack_qty'), product['pack_qty'])
+        quantity = safe_int(request.form.get('quantity'), product['quantity'])
+        price = safe_float(request.form.get('price'), product['price'])
+        price_cn = safe_float(request.form.get('price_cn'), product['price_cn'])
+        has_vat = 1 if request.form.get('has_vat') == 'true' else 0
+        loc_id_str = request.form.get('location_id')
+        location_id = int(loc_id_str) if loc_id_str and str(loc_id_str).isdigit() else product['location_id']
         description = request.form.get('description', product['description'])
         
         img_name = product['image']
@@ -112,33 +129,38 @@ def update_product(pid):
         barcode = data.get('barcode', product['barcode'])
         unit = data.get('unit', product['unit'])
         category = data.get('category', product['category'])
-        pack_qty = data.get('pack_qty', product['pack_qty'])
-        quantity = data.get('quantity', product['quantity'])
-        price = data.get('price', product['price'])
-        price_cn = data.get('price_cn', product['price_cn'])
-        has_vat = data.get('has_vat', product['has_vat'])
+        pack_qty = safe_int(data.get('pack_qty'), product['pack_qty'])
+        quantity = safe_int(data.get('quantity'), product['quantity'])
+        price = safe_float(data.get('price'), product['price'])
+        price_cn = safe_float(data.get('price_cn'), product['price_cn'])
+        has_vat = 1 if data.get('has_vat') else 0
         location_id = data.get('location_id', product['location_id'])
         description = data.get('description', product['description'])
         img_name = product['image']
 
-    conn.execute('''
-        UPDATE products 
-        SET name=?, brand=?, barcode=?, unit=?, category=?, pack_qty=?, quantity=?, price=?, price_cn=?, has_vat=?, location_id=?, description=?, image=?
-        WHERE id=?
-    ''', (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, img_name, pid))
-    
-    # Track manual quantity change as 'fix'
-    if quantity != old_qty:
-        diff = quantity - old_qty
-        cursor = conn.execute('INSERT INTO transaction_bundles (type, total_amount, note, created_by) VALUES (?, ?, ?, ?)',
-                             ('fix', 0, 'Барааны мэдээлэл засварласнаар үлдэгдэл өөрчлөгдлөө', session['user_id']))
-        bundle_id = cursor.lastrowid
-        conn.execute('INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',
-                     (bundle_id, pid, diff, 0, 0))
-                     
-    conn.commit()
-    conn.close()
-    return jsonify({'message': 'Бараа шинэчлэгдлээ'})
+    try:
+        conn.execute('''
+            UPDATE products 
+            SET name=?, brand=?, barcode=?, unit=?, category=?, pack_qty=?, quantity=?, price=?, price_cn=?, has_vat=?, location_id=?, description=?, image=?
+            WHERE id=?
+        ''', (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, img_name, pid))
+        
+        # Track manual quantity change as 'fix'
+        if quantity != old_qty:
+            diff = quantity - old_qty
+            cursor = conn.execute('INSERT INTO transaction_bundles (type, total_amount, note, created_by) VALUES (?, ?, ?, ?)',
+                                 ('fix', 0, 'Барааны мэдээлэл засварласнаар үлдэгдэл өөрчлөгдлөө', session.get('user_id')))
+            bundle_id = cursor.lastrowid
+            conn.execute('INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',
+                         (bundle_id, pid, diff, 0, 0))
+                         
+        conn.commit()
+        return jsonify({'message': 'Бараа шинэчлэгдлээ'})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': f'Засварлахад алдаа гарлаа: {str(e)}'}), 500
+    finally:
+        conn.close()
 
 @products_bp.route('/products/<int:pid>', methods=['DELETE'])
 def delete_product(pid):
@@ -159,6 +181,33 @@ def get_categories():
     conn.close()
     return jsonify([dict(c) for c in cats])
 
+@products_bp.route('/categories', methods=['POST'])
+def add_category():
+    if not login_required() or not has_role('manager'): return unauthorized()
+    name = request.json.get('name')
+    if not name: return jsonify({'error': 'Нэр шаардлагатай'}), 400
+    conn = get_db()
+    conn.execute('INSERT INTO categories (name) VALUES (?)', (name,))
+    conn.commit(); conn.close()
+    return jsonify({'message': 'Амжилттай нэмэгдлээ'})
+
+@products_bp.route('/categories/<int:cid>', methods=['PUT'])
+def update_category(cid):
+    if not login_required() or not has_role('manager'): return unauthorized()
+    name = request.json.get('name')
+    conn = get_db()
+    conn.execute('UPDATE categories SET name=? WHERE id=?', (name, cid))
+    conn.commit(); conn.close()
+    return jsonify({'message': 'Амжилттай шинэчлэгдлээ'})
+
+@products_bp.route('/categories/<int:cid>', methods=['DELETE'])
+def delete_category(cid):
+    if not login_required() or not has_role('manager'): return unauthorized()
+    conn = get_db()
+    conn.execute('DELETE FROM categories WHERE id=?', (cid,))
+    conn.commit(); conn.close()
+    return jsonify({'message': 'Амжилттай устгагдлаа'})
+
 @products_bp.route('/brands', methods=['GET'])
 def get_brands():
     if not login_required(): return unauthorized()
@@ -167,6 +216,33 @@ def get_brands():
     conn.close()
     return jsonify([dict(b) for b in brands])
 
+@products_bp.route('/brands', methods=['POST'])
+def add_brand():
+    if not login_required() or not has_role('manager'): return unauthorized()
+    name = request.json.get('name')
+    if not name: return jsonify({'error': 'Нэр шаардлагатай'}), 400
+    conn = get_db()
+    conn.execute('INSERT INTO brands (name) VALUES (?)', (name,))
+    conn.commit(); conn.close()
+    return jsonify({'message': 'Амжилттай нэмэгдлээ'})
+
+@products_bp.route('/brands/<int:bid>', methods=['PUT'])
+def update_brand(bid):
+    if not login_required() or not has_role('manager'): return unauthorized()
+    name = request.json.get('name')
+    conn = get_db()
+    conn.execute('UPDATE brands SET name=? WHERE id=?', (name, bid))
+    conn.commit(); conn.close()
+    return jsonify({'message': 'Амжилттай шинэчлэгдлээ'})
+
+@products_bp.route('/brands/<int:bid>', methods=['DELETE'])
+def delete_brand(bid):
+    if not login_required() or not has_role('manager'): return unauthorized()
+    conn = get_db()
+    conn.execute('DELETE FROM brands WHERE id=?', (bid,))
+    conn.commit(); conn.close()
+    return jsonify({'message': 'Амжилттай устгагдлаа'})
+
 @products_bp.route('/locations', methods=['GET'])
 def get_locations():
     if not login_required(): return unauthorized()
@@ -174,3 +250,21 @@ def get_locations():
     locs = conn.execute('SELECT * FROM locations ORDER BY name').fetchall()
     conn.close()
     return jsonify([dict(l) for l in locs])
+
+@products_bp.route('/locations', methods=['POST'])
+def add_location():
+    if not login_required() or not has_role('manager'): return unauthorized()
+    name = request.json.get('name')
+    if not name: return jsonify({'error': 'Нэр шаардлагатай'}), 400
+    conn = get_db()
+    conn.execute('INSERT INTO locations (name) VALUES (?)', (name,))
+    conn.commit(); conn.close()
+    return jsonify({'message': 'Амжилттай нэмэгдлээ'})
+
+@products_bp.route('/locations/<int:lid>', methods=['DELETE'])
+def delete_location(lid):
+    if not login_required() or not has_role('manager'): return unauthorized()
+    conn = get_db()
+    conn.execute('DELETE FROM locations WHERE id=?', (lid,))
+    conn.commit(); conn.close()
+    return jsonify({'message': 'Амжилттай устгагдлаа'})
