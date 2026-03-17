@@ -15,6 +15,7 @@ def login():
     conn.close()
     
     if user and user['password'] == hash_password(password + '123'):
+        session.permanent = True
         session['user_id'] = user['id']
         session['username'] = user['username']
         session['role'] = user['role']

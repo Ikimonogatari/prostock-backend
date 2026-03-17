@@ -13,3 +13,6 @@ class Config:
     CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'http://localhost:3000').split(',')
     DEBUG = os.environ.get('DEBUG', 'True').lower() == 'true'
     PORT = int(os.environ.get('PORT', 5000))
+    SESSION_COOKIE_SAMESITE = 'Lax'
+    SESSION_COOKIE_SECURE = False  # Set to True in production with HTTPS
+    PERMANENT_SESSION_LIFETIME = 86400  # 24 hours
