@@ -12,12 +12,6 @@ services:
       - .env
     restart: always
 
-  frontend:
-    build: ../frontend
-    ports:
-      - "3000:3000"
-    restart: always
-
   nginx:
     image: nginx:alpine
     ports:
@@ -26,5 +20,4 @@ services:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - backend
-      - frontend
     restart: always
