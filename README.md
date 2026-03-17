@@ -1,55 +1,48 @@
-# StockPro Backend (Flask API)
+# StockPro Backend
 
-Бараа бүртгэлийн систем — REST API сервер.
+Modular Flask Backend for StockPro Inventory Management System.
 
-## Шаардлага
-
-- Python 3.12+
-- pip (python3 -m pip)
-
-## Суулгах
-
-```bash
-cd backend
-python3 -m pip install --user --break-system-packages flask flask-cors openpyxl
+## Project Structure
+```
+backend/
+├── app/                # Application package
+│   ├── __init__.py     # App factory
+│   ├── database.py     # DB logic
+│   ├── utils.py        # Helpers/Decorators
+│   └── blueprints/     # API Routes
+├── config.py           # Configuration classes
+├── main.py             # Entry point
+├── Dockerfile          # Production Docker setup
+└── .env                # Environment variables
 ```
 
-## Ажиллуулах
+## Local Setup
+1. Create a virtual environment: `python -m venv venv`
+2. Activate it: `source venv/bin/activate` (Linux) or `venv\Scripts\activate` (Windows)
+3. Install dependencies: `pip install -r requirements.txt`
+4. Copy `.env` and fill in values.
+5. Run: `python main.py`
 
-```bash
-cd backend
-python3 app.py
-```
+## IONOS Deployment Instructions
 
-Сервер `http://localhost:5000` дээр ажиллана.
+### Option 1: Docker (Recommended)
+1. **Prepare Server**: Ensure Docker and Docker Compose are installed on your IONOS VPS.
+2. **Transfer Files**: Upload the `backend` folder to your server.
+3. **Configure Environment**: Update the `.env` file with your production domain and secret key.
+4. **Build and Run**:
+   ```bash
+   docker compose up -d --build
+   ```
+5. **Reverse Proxy (Optional)**: If you're not using Docker for Nginx, configure Nginx on the host to proxy to `http://localhost:5000`.
 
-## API Endpoints
+### Option 2: Manual (Gunicorn)
+1. **Install Python**: `sudo apt update && sudo apt install python3-pip python3-venv`
+2. **Setup App**: Transfer files, create venv, and install requirements.
+3. **Run with Gunicorn**:
+   ```bash
+   gunicorn --bind 0.0.0.0:5000 --workers 4 --timeout 120 main:app
+   ```
+4. **Setup Systemd**: Create a service file to keep the app running in the background.
 
-| Method | Endpoint | Тайлбар | Эрх |
-|--------|----------|---------|-----|
-| POST | `/api/login` | Нэвтрэх | — |
-| POST | `/api/logout` | Гарах | — |
-| GET | `/api/me` | Одоогийн хэрэглэгч | login |
-| POST | `/api/change-password` | Нууц үг солих | login |
-| GET | `/api/products` | Бүх бараа | login |
-| POST | `/api/products` | Бараа нэмэх | manager+ |
-| PUT | `/api/products/:id` | Бараа засах | manager+ |
-| DELETE | `/api/products/:id` | Бараа устгах | admin |
-| GET | `/api/categories` | Ангилалууд | login |
-| POST | `/api/transactions` | Гүйлгээ нэмэх | login |
-| GET | `/api/transactions` | Гүйлгээний түүх | login |
-| GET | `/api/stats` | Статистик | login |
-| GET | `/api/users` | Хэрэглэгчид | admin |
-| POST | `/api/users` | Хэрэглэгч нэмэх | admin |
-| DELETE | `/api/users/:id` | Хэрэглэгч устгах | admin |
-| PUT | `/api/users/:id/role` | Эрх өөрчлөх | admin |
-| POST | `/api/import/products` | Excel-ээс бараа импорт | manager+ |
-| POST | `/api/import/transactions` | Excel-ээс гүйлгээ импорт | login |
-| GET | `/api/export/products` | Бараа Excel-ээр татах | login |
-| GET | `/api/template` | Импорт загвар файл татах | — |
-
-## Эрхийн түвшин
-
-- **admin** — бүх зүйл
-- **manager** — бараа нэмэх/засах, гүйлгээ
-- **user** — зөвхөн гүйлгээ + харах
+## Database
+The system uses SQLite for simplicity. The database file `database.db` will be automatically initialized and migrated on first run. Ensure the service has write permissions to the project directory.
