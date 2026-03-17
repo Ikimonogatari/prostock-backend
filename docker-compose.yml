@@ -3,10 +3,9 @@ version: '3.8'
 services:
   backend:
     build: .
-    # Removed host ports to avoid conflicts; Nginx handles public access
+    # Persist all data in one folder
     volumes:
-      - ./uploads:/app/uploads
-      - ./database.db:/app/database.db
+      - ./data:/app/data
     env_file:
       - .env
     restart: always
