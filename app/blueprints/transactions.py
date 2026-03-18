@@ -69,6 +69,9 @@ def add_transaction():
     items = data.get('items', [])
     note = data.get('note', '')
     total_amount = safe_float(data.get('total_amount'), 0)
+    location_id = data.get('location_id')
+    if location_id == 'all':
+        location_id = None
     
     if tx_type not in ('in', 'out'):
         return jsonify({'error': 'Төрөл буруу'}), 400
@@ -84,14 +87,56 @@ def add_transaction():
         
         # 2. Add items and update quantities
         for it in items:
-            p_id = it['product_id']
-            qty = safe_int(it['quantity'])
-            price = safe_float(it['price'])
+            p_id_raw = str(it.get('product_id', ''))
+            qty = safe_int(it.get('quantity'), 0)
+            price = safe_float(it.get('price'), 0)
             has_vat = 1 if it.get('has_vat') else 0
             
-            # Update stock
-            delta = qty if tx_type == 'in' else -qty
-            conn.execute('UPDATE products SET quantity = quantity + ? WHERE id = ?', (delta, p_id))
+            if p_id_raw.startswith('new_'):
+                if not location_id:
+                    raise Exception("Шинэ бараа нэмэхийн тулд тодорхой агуулах сонгох шаардлагатай.")
+                
+                name = it.get('name', '')
+                barcode = it.get('barcode', '')
+                
+                # Check for existing
+                existing = conn.execute('''
+                    SELECT id FROM products 
+                    WHERE location_id = ? AND name = ? AND barcode = ?
+                ''', (location_id, name, barcode)).fetchone()
+                
+                if existing:
+                    p_id = existing['id']
+                    delta = qty if tx_type == 'in' else -qty
+                    conn.execute('UPDATE products SET quantity = quantity + ? WHERE id = ?', (delta, p_id))
+                else:
+                    loc_row = conn.execute('SELECT name FROM locations WHERE id=?', (location_id,)).fetchone()
+                    loc_name = loc_row['name'] if loc_row else 'Үндсэн Агуулах'
+                    
+                    c2 = conn.execute('''
+                        INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, has_vat, location_id, location, image, description)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        name,
+                        it.get('brand', ''),
+                        barcode,
+                        it.get('unit', ''),
+                        it.get('category', ''),
+                        safe_int(it.get('pack_qty'), 1),
+                        qty if tx_type == 'in' else 0,
+                        price,
+                        has_vat,
+                        location_id,
+                        loc_name,
+                        it.get('image', ''),
+                        it.get('description', '')
+                    ))
+                    p_id = c2.lastrowid
+            else:
+                p_id = int(p_id_raw)
+                # Update stock
+                delta = qty if tx_type == 'in' else -qty
+                conn.execute('UPDATE products SET quantity = quantity + ? WHERE id = ?', (delta, p_id))
             
             # Record item
             conn.execute('INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',

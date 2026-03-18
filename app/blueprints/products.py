@@ -27,20 +27,43 @@ def get_products():
     loc = request.args.get('location', '')
     
     conn = get_db()
-    query = 'SELECT * FROM products WHERE 1=1'
     params = []
     
-    if search:
-        query += ' AND (name LIKE ? OR barcode LIKE ?)'
-        params.extend([f'%{search}%', f'%{search}%'])
-    if cat:
-        query += ' AND category = ?'
-        params.append(cat)
     if loc:
+        # SPecific location view: Individual records
+        query = 'SELECT * FROM products WHERE 1=1'
+        if search:
+            query += ' AND (name LIKE ? OR barcode LIKE ?)'
+            params.extend([f'%{search}%', f'%{search}%'])
+        if cat:
+            query += ' AND category = ?'
+            params.append(cat)
         query += ' AND location_id = ?'
         params.append(loc)
+        query += ' ORDER BY created_at DESC'
+    else:
+        # Global view: Aggregated totals
+        query = '''
+            SELECT 
+                MIN(id) as id, name, brand, barcode, unit, category, pack_qty,
+                SUM(quantity) as quantity, 
+                MAX(price) as price, MAX(price_cn) as price_cn,
+                has_vat, 'Олон агуулах' as location, NULL as location_id,
+                image, description, MAX(created_at) as created_at
+            FROM products 
+            WHERE 1=1
+        '''
+        if search:
+            query += ' AND (name LIKE ? OR barcode LIKE ?)'
+            params.extend([f'%{search}%', f'%{search}%'])
+        if cat:
+            query += ' AND category = ?'
+            params.append(cat)
+            
+        group_col = 'COALESCE(NULLIF(barcode, ""), name)'
+        query += f' GROUP BY {group_col}'
+        query += ' ORDER BY created_at DESC'
         
-    query += ' ORDER BY created_at DESC'
     products = conn.execute(query, params).fetchall()
     conn.close()
     return jsonify([dict(p) for p in products])

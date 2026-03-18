@@ -286,7 +286,7 @@ def export_products():
     conn.close()
 
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Барааны жагсаалт'
-    headers = ['Брэнд', 'Бараа код', 'Зураг', 'Бараа нэр', 'Нэгж', 'Тоо Ширхэг', 'Үлдэгдэл', 'Урдаас ирсэн үнэ Юань', 'Төгрөг', 'Агуулах']
+    headers = ['Брэнд', 'Ангилал', 'Бараа код', 'Зураг', 'Бараа нэр', 'Нэгж', 'Тоо Ширхэг', 'Үлдэгдэл', 'Урдаас ирсэн үнэ Юань', 'Төгрөг', 'Агуулах']
     ws.append(headers)
 
     # Styling
@@ -303,7 +303,7 @@ def export_products():
                     ws.add_image(img, f'C{idx}'); ws.row_dimensions[idx].height = 35
                 except: img_val = 'Error'
         
-        ws.append([p['brand'] or '', p['barcode'] or '', img_val, p['name'], p['unit'] or '', p['pack_qty'] or 0, p['quantity'], f"{p['price_cn'] or 0} ¥", f"{p['price'] or 0} ₮", p['location'] or 'Үндсэн Агуулах'])
+        ws.append([p['brand'] or '', p['category'] or '', p['barcode'] or '', img_val, p['name'], p['unit'] or '', p['pack_qty'] or 0, p['quantity'], f"{p['price_cn'] or 0} ¥", f"{p['price'] or 0} ₮", p['location'] or 'Үндсэн Агуулах'])
 
     output = io.BytesIO(); wb.save(output); output.seek(0)
     return send_file(output, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', as_attachment=True, download_name='products_export.xlsx')
@@ -312,9 +312,9 @@ def export_products():
 def download_template():
     if not HAS_OPENPYXL: return jsonify({'error': 'openpyxl суулгаагүй'}), 500
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Бараа импорт'
-    headers = ['Брэнд', 'Бараа код', 'Зураг', 'Бараа нэр', 'Нэгж', 'Тоо Ширхэг', 'Үлдэгдэл', 'Урдаас ирсэн үнэ Юань', 'Төгрөг', 'Агуулах']
+    headers = ['Брэнд', 'Ангилал', 'Бараа код', 'Зураг', 'Бараа нэр', 'Нэгж', 'Тоо Ширхэг', 'Үлдэгдэл', 'Урдаас ирсэн үнэ Юань', 'Төгрөг', 'Агуулах']
     ws.append(headers)
-    ws.append(['Samsung', '001', '', 'Galaxy S21', 'ширхэг', 10, 10, '500 ¥', '500,000 ₮', 'Үндсэн агуулах'])
+    ws.append(['Samsung', 'Утас', '001', '', 'Galaxy S21', 'ширхэг', 10, 10, '500 ¥', '500,000 ₮', 'Үндсэн агуулах'])
     
     output = io.BytesIO(); wb.save(output); output.seek(0)
     return send_file(output, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', as_attachment=True, download_name='template.xlsx')

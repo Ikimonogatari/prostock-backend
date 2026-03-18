@@ -85,7 +85,7 @@ def init_db():
     c.execute('''
         CREATE TABLE IF NOT EXISTS transaction_bundles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            type TEXT NOT NULL CHECK(type IN ('in','out','fix')),
+            type TEXT NOT NULL CHECK(type IN ('in','out','fix','move')),
             total_amount REAL DEFAULT 0,
             note TEXT,
             created_by INTEGER,
@@ -93,6 +93,24 @@ def init_db():
             FOREIGN KEY(created_by) REFERENCES users(id)
         )
     ''')
+
+    # Migration: rebuild transaction_bundles if 'move' type is not in the CHECK constraint
+    row = c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='transaction_bundles'").fetchone()
+    if row and "'move'" not in row[0]:
+        c.execute('ALTER TABLE transaction_bundles RENAME TO _transaction_bundles_old')
+        c.execute('''
+            CREATE TABLE transaction_bundles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL CHECK(type IN ('in','out','fix','move')),
+                total_amount REAL DEFAULT 0,
+                note TEXT,
+                created_by INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(created_by) REFERENCES users(id)
+            )
+        ''')
+        c.execute('INSERT INTO transaction_bundles SELECT * FROM _transaction_bundles_old')
+        c.execute('DROP TABLE _transaction_bundles_old')
 
     # Transaction items table
     c.execute('''
