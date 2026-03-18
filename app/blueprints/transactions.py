@@ -13,6 +13,7 @@ def get_transactions():
     end_date = request.args.get('end_date', '')
     limit = min(safe_int(request.args.get('limit'), 100), 500)
     location_id = request.args.get('location_id', '')
+    search = request.args.get('search', '')
 
     conn = get_db()
     query = '''
@@ -40,6 +41,20 @@ def get_transactions():
     if end_date:
         query += ' AND DATE(b.created_at) <= ?'
         params.append(end_date)
+    
+    if search:
+        query += ''' AND (
+            CAST(b.id AS TEXT) LIKE ? 
+            OR b.note LIKE ? 
+            OR EXISTS (
+                SELECT 1 FROM transaction_items ti 
+                JOIN products p ON ti.product_id = p.id 
+                WHERE ti.bundle_id = b.id AND (p.name LIKE ? OR p.barcode LIKE ?)
+            )
+        )'''
+        s = f'%{search}%'
+        params.extend([s, s, s, s])
+
     query += ' ORDER BY b.created_at DESC LIMIT ?'
     params.append(limit)
     

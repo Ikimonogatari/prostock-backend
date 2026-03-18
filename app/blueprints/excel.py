@@ -288,7 +288,7 @@ def export_products():
     conn.close()
 
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Барааны жагсаалт'
-    headers = ['Брэнд', 'Ангилал', 'Бараа код', 'Зураг', 'Бараа нэр', 'Нэгж', 'Тоо Ширхэг', 'Үлдэгдэл', 'Урдаас ирсэн үнэ Юань', 'Төгрөг', 'Агуулах']
+    headers = ['Брэнд', 'Ангилал', 'Бараа код', 'Зураг', 'Бараа нэр', 'Нэгж', 'Тоо Ширхэг', 'Үлдэгдэл', 'Урдаас ирсэн үнэ Юань', 'Төгрөг', 'Нийт үнэ', 'Агуулах']
     ws.append(headers)
 
     # Styling
@@ -305,7 +305,21 @@ def export_products():
                     ws.add_image(img, f'C{idx}'); ws.row_dimensions[idx].height = 35
                 except: img_val = 'Error'
         
-        ws.append([p['brand'] or '', p['category'] or '', p['barcode'] or '', img_val, p['name'], p['unit'] or '', p['pack_qty'] or 0, p['quantity'], f"{p['price_cn'] or 0} ¥", f"{p['price'] or 0} ₮", p['location'] or 'Үндсэн Агуулах'])
+        total_price = (p['quantity'] or 0) * (p['price'] or 0)
+        ws.append([
+            p['brand'] or '', 
+            p['category'] or '', 
+            p['barcode'] or '', 
+            img_val, 
+            p['name'], 
+            p['unit'] or '', 
+            p['pack_qty'] or 0, 
+            p['quantity'], 
+            f"¥{p['price_cn'] or 0:,.2f}", 
+            f"₮{p['price'] or 0:,.0f}", 
+            f"₮{total_price:,.0f}", 
+            p['location'] or 'Үндсэн Агуулах'
+        ])
 
     output = io.BytesIO(); wb.save(output); output.seek(0)
     return send_file(output, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', as_attachment=True, download_name='products_export.xlsx')
