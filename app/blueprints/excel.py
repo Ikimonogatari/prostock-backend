@@ -152,6 +152,8 @@ def import_products():
     file_bytes = f.read()
     mode = request.form.get('mode', 'update')
     form_location_id = request.form.get('location_id')
+    if form_location_id == 'all':
+        return jsonify({'error': 'Импорт хийхийн тулд тодорхой агуулах сонгоно уу.'}), 400
     
     rows, err = parse_excel(file_bytes)
     if err: return jsonify({'error': err}), 400
@@ -244,9 +246,9 @@ def import_products():
                     final_vat = 0
 
                 cursor = conn.execute('''
-                    INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, location, image) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (final_name, final_brand, final_barcode, final_unit, final_category, pack_qty_excel, qty_excel, price, price_cn, final_vat, loc_id, location_name, final_image))
+                    INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, location, image, description) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (final_name, final_brand, final_barcode, final_unit, final_category, pack_qty_excel, qty_excel, price, price_cn, final_vat, loc_id, location_name, final_image, r.get('description', '')))
                 new_id = cursor.lastrowid
                 
                 # Global sync: If we actually introduced new data (like an image), let's sync it back globally

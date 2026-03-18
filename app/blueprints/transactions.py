@@ -158,6 +158,8 @@ def move_products():
     data = request.json or {}
     from_location_id = data.get('from_location_id')
     to_location_id = data.get('to_location_id')
+    if from_location_id == 'all' or to_location_id == 'all':
+        return jsonify({'error': 'Зөөх үйлдлийг Бүр агуулах дээр хийх боломжгүй.'}), 400
     items = data.get('items', [])
     note = data.get('note', '')
 
@@ -223,8 +225,8 @@ def move_products():
             if not dest:
                 # Create destination product copy (quantity starts at 0)
                 cur = conn.execute('''
-                    INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, image)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, location, description, image)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     src['name'],
                     src['brand'] or '',
@@ -237,6 +239,7 @@ def move_products():
                     safe_float(src['price_cn'], 0),
                     0,
                     to_location_id,
+                    to_loc['name'],
                     src['description'] or '',
                     src['image']
                 ))

@@ -24,7 +24,7 @@ def get_products():
     
     search = request.args.get('search', '')
     cat = request.args.get('category', '')
-    loc = request.args.get('location', '')
+    loc = request.args.get('location_id') or request.args.get('location', '')
     
     conn = get_db()
     params = []
@@ -101,7 +101,9 @@ def add_product():
     price_cn = safe_float(request.form.get('price_cn'), 0.0)
     has_vat = 1 if request.form.get('has_vat') == 'true' else 0 # FormData sends 'true'/'false'
     location_id_str = request.form.get('location_id')
-    location_id = int(location_id_str) if location_id_str and str(location_id_str).isdigit() else None
+    if not location_id_str or location_id_str == 'all':
+        return jsonify({'error': 'Агуулах сонгоно уу'}), 400
+    location_id = int(location_id_str)
     description = request.form.get('description', '')
     
     image_file = request.files.get('image')
@@ -114,6 +116,10 @@ def add_product():
 
     conn = get_db()
     
+    # Fetch location name
+    loc_row = conn.execute('SELECT name FROM locations WHERE id = ?', (location_id,)).fetchone()
+    location_name = loc_row['name'] if loc_row else 'Үндсэн Агуулах'
+
     # Validation: Check if it already exists in THIS location
     existing = conn.execute('''
         SELECT id FROM products 
@@ -126,9 +132,9 @@ def add_product():
         
     try:
         cursor = conn.execute('''
-            INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, image) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, img_name))
+            INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, location, description, image) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, location_name, description, img_name))
         pid = cursor.lastrowid
         
         # Add transaction logic
@@ -222,10 +228,10 @@ def update_product(pid):
         if str(barcode).strip() or str(name).strip():
             sync_query = '''
                 UPDATE products 
-                SET brand=?, unit=?, category=?, description=?, image=?, has_vat=?, name=?, barcode=?
+                SET brand=?, unit=?, category=?, description=?, image=?, has_vat=?, name=?, barcode=?, price=?, price_cn=?
                 WHERE id != ? AND ((barcode=? AND barcode!='') OR (name=? AND name!=''))
             '''
-            conn.execute(sync_query, (brand, unit, category, description, img_name, has_vat, name, barcode, pid, product['barcode'], product['name']))
+            conn.execute(sync_query, (brand, unit, category, description, img_name, has_vat, name, barcode, price, price_cn, pid, product['barcode'], product['name']))
         
         # Cleanup old image if it changed
         if old_img and old_img != img_name:
