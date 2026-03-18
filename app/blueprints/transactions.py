@@ -62,6 +62,10 @@ def get_transactions():
     result = []
     for b in bundles:
         bundle_dict = dict(b)
+        # Format created_at to ISO 8601 with Z for UTC
+        if bundle_dict.get('created_at'):
+            bundle_dict['created_at'] = bundle_dict['created_at'].replace(' ', 'T') + 'Z'
+            
         items = conn.execute('''
             SELECT ti.*, p.name as product_name, p.brand, p.barcode, p.pack_qty, p.unit, p.image
             FROM transaction_items ti

@@ -66,7 +66,15 @@ def get_products():
         
     products = conn.execute(query, params).fetchall()
     conn.close()
-    return jsonify([dict(p) for p in products])
+    
+    result = []
+    for p in products:
+        p_dict = dict(p)
+        if p_dict.get('created_at'):
+            p_dict['created_at'] = p_dict['created_at'].replace(' ', 'T') + 'Z'
+        result.append(p_dict)
+        
+    return jsonify(result)
 
 @products_bp.route('/catalog', methods=['GET'])
 def get_catalog():
