@@ -64,6 +64,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             brand TEXT DEFAULT '',
+            product_code TEXT DEFAULT '',
             barcode TEXT DEFAULT '',
             unit TEXT DEFAULT '',
             category TEXT,
@@ -132,10 +133,23 @@ def init_db():
         c.execute('INSERT INTO locations (name, description) VALUES (?, ?)', 
                   ('Үндсэн Агуулах', 'Админаас үүсгэсэн үндсэн агуулах'))
     
-    # Handle missing columns if any (Migration)
+    # Handle missing/renamed columns (Migration)
     existing_cols = [row[1] for row in c.execute('PRAGMA table_info(products)').fetchall()]
+    
+    # 1. Check if we need to rename barcode to product_code
+    if 'barcode' in existing_cols and 'product_code' not in existing_cols:
+        try:
+            # Rename barcode to product_code
+            c.execute('ALTER TABLE products RENAME COLUMN barcode TO product_code')
+            print("Renamed 'barcode' column to 'product_code'")
+            # Refresh existing_cols after rename
+            existing_cols = [row[1] for row in c.execute('PRAGMA table_info(products)').fetchall()]
+        except Exception as e:
+            print(f"Migration error renaming barcode: {e}")
+
     migration_cols = [
         ('brand', 'TEXT DEFAULT ""'), 
+        ('product_code', 'TEXT DEFAULT ""'), 
         ('barcode', 'TEXT DEFAULT ""'), 
         ('unit', 'TEXT DEFAULT ""'), 
         ('price_cn', 'REAL DEFAULT 0'), 

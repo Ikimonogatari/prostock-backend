@@ -49,11 +49,11 @@ def get_transactions():
             OR EXISTS (
                 SELECT 1 FROM transaction_items ti 
                 JOIN products p ON ti.product_id = p.id 
-                WHERE ti.bundle_id = b.id AND (p.name LIKE ? OR p.barcode LIKE ?)
+                WHERE ti.bundle_id = b.id AND (p.name LIKE ? OR p.product_code LIKE ? OR p.barcode LIKE ?)
             )
         )'''
         s = f'%{search}%'
-        params.extend([s, s, s, s])
+        params.extend([s, s, s, s, s])
 
     query += ' ORDER BY b.created_at DESC LIMIT ?'
     params.append(limit)
@@ -67,7 +67,7 @@ def get_transactions():
             bundle_dict['created_at'] = bundle_dict['created_at'].replace(' ', 'T') + 'Z'
             
         items = conn.execute('''
-            SELECT ti.*, p.name as product_name, p.brand, p.barcode, p.pack_qty, p.unit, p.image
+            SELECT ti.*, p.name as product_name, p.brand, p.product_code, p.barcode, p.pack_qty, p.unit, p.image
             FROM transaction_items ti
             JOIN products p ON ti.product_id = p.id
             WHERE ti.bundle_id = ?
@@ -116,13 +116,14 @@ def add_transaction():
                     raise Exception("Шинэ бараа нэмэхийн тулд тодорхой агуулах сонгох шаардлагатай.")
                 
                 name = it.get('name', '')
+                product_code = it.get('product_code', '')
                 barcode = it.get('barcode', '')
                 
                 # Check for existing
                 existing = conn.execute('''
                     SELECT id FROM products 
-                    WHERE location_id = ? AND name = ? AND barcode = ?
-                ''', (location_id, name, barcode)).fetchone()
+                    WHERE location_id = ? AND name = ? AND (product_code = ? OR barcode = ?)
+                ''', (location_id, name, product_code, barcode)).fetchone()
                 
                 if existing:
                     p_id = existing['id']
@@ -133,11 +134,12 @@ def add_transaction():
                     loc_name = loc_row['name'] if loc_row else 'Үндсэн Агуулах'
                     
                     c2 = conn.execute('''
-                        INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, has_vat, location_id, location, image, description)
+                        INSERT INTO products (name, brand, product_code, barcode, unit, category, pack_qty, quantity, price, has_vat, location_id, location, image, description)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         name,
                         it.get('brand', ''),
+                        product_code,
                         barcode,
                         it.get('unit', ''),
                         it.get('category', ''),
@@ -228,9 +230,14 @@ def move_products():
             if qty > safe_int(src['quantity'], 0):
                 return jsonify({'error': f"Үлдэгдэл хүрэлцэхгүй байна: {src['name']}"}), 400
 
-            # Find matching destination product in target location (barcode preferred)
+            # Find matching destination product in target location (product_code preferred, then barcode)
             dest = None
-            if src['barcode']:
+            if src['product_code']:
+                dest = conn.execute(
+                    "SELECT * FROM products WHERE location_id=? AND product_code=? AND product_code!='' LIMIT 1",
+                    (to_location_id, src['product_code'])
+                ).fetchone()
+            if not dest and src['barcode']:
                 dest = conn.execute(
                     "SELECT * FROM products WHERE location_id=? AND barcode=? AND barcode!='' LIMIT 1",
                     (to_location_id, src['barcode'])
@@ -244,11 +251,12 @@ def move_products():
             if not dest:
                 # Create destination product copy (quantity starts at 0)
                 cur = conn.execute('''
-                    INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, location, description, image)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO products (name, brand, product_code, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, location, description, image)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     src['name'],
                     src['brand'] or '',
+                    src['product_code'] or '',
                     src['barcode'] or '',
                     src['unit'] or '',
                     src['category'] or '',

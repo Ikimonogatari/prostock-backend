@@ -33,8 +33,8 @@ def get_products():
         # SPecific location view: Individual records
         query = 'SELECT * FROM products WHERE 1=1'
         if search:
-            query += ' AND (name LIKE ? OR barcode LIKE ?)'
-            params.extend([f'%{search}%', f'%{search}%'])
+            query += ' AND (name LIKE ? OR product_code LIKE ? OR barcode LIKE ?)'
+            params.extend([f'%{search}%', f'%{search}%', f'%{search}%'])
         if cat:
             query += ' AND category = ?'
             params.append(cat)
@@ -45,7 +45,7 @@ def get_products():
         # Global view: Aggregated totals
         query = '''
             SELECT 
-                MIN(id) as id, name, brand, barcode, unit, category, pack_qty,
+                MIN(id) as id, name, brand, product_code, barcode, unit, category, pack_qty,
                 SUM(quantity) as quantity, 
                 MAX(price) as price, MAX(price_cn) as price_cn,
                 has_vat, 'Олон агуулах' as location, NULL as location_id,
@@ -54,13 +54,13 @@ def get_products():
             WHERE 1=1
         '''
         if search:
-            query += ' AND (name LIKE ? OR barcode LIKE ?)'
-            params.extend([f'%{search}%', f'%{search}%'])
+            query += ' AND (name LIKE ? OR product_code LIKE ? OR barcode LIKE ?)'
+            params.extend([f'%{search}%', f'%{search}%', f'%{search}%'])
         if cat:
             query += ' AND category = ?'
             params.append(cat)
             
-        group_col = 'COALESCE(NULLIF(barcode, ""), name)'
+        group_col = 'COALESCE(NULLIF(product_code, ""), NULLIF(barcode, ""), name)'
         query += f' GROUP BY {group_col}'
         query += ' ORDER BY created_at DESC'
         
@@ -82,11 +82,11 @@ def get_catalog():
         return unauthorized()
     
     conn = get_db()
-    # Fetch distinct products globally by barcode or name
+    # Fetch distinct products globally by product_code or name
     query = '''
-        SELECT name, brand, barcode, unit, category, description, image, price, price_cn, has_vat, pack_qty
+        SELECT name, brand, product_code, barcode, unit, category, description, image, price, price_cn, has_vat, pack_qty
         FROM products 
-        GROUP BY COALESCE(NULLIF(barcode, ''), name)
+        GROUP BY COALESCE(NULLIF(product_code, ''), NULLIF(barcode, ''), name)
         ORDER BY name ASC
     '''
     catalog = conn.execute(query).fetchall()
@@ -100,6 +100,7 @@ def add_product():
     
     name = request.form.get('name')
     brand = request.form.get('brand', '')
+    product_code = request.form.get('product_code', '')
     barcode = request.form.get('barcode', '')
     unit = request.form.get('unit', '')
     category = request.form.get('category', '')
@@ -131,8 +132,8 @@ def add_product():
     # Validation: Check if it already exists in THIS location
     existing = conn.execute('''
         SELECT id FROM products 
-        WHERE location_id = ? AND ((barcode != '' AND barcode = ?) OR name = ?)
-    ''', (location_id, barcode, name)).fetchone()
+        WHERE location_id = ? AND ((product_code != '' AND product_code = ?) OR (barcode != '' AND barcode = ?) OR name = ?)
+    ''', (location_id, product_code, barcode, name)).fetchone()
     
     if existing:
         conn.close()
@@ -140,9 +141,9 @@ def add_product():
         
     try:
         cursor = conn.execute('''
-            INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, location, description, image) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, location_name, description, img_name))
+            INSERT INTO products (name, brand, product_code, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, location, description, image) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (name, brand, product_code, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, location_name, description, img_name))
         pid = cursor.lastrowid
         
         # Add transaction logic
@@ -154,14 +155,14 @@ def add_product():
             conn.execute('INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',
                          (bundle_id, pid, quantity, price, has_vat))
             
-        # Global sync: If barcode or name exists elsewhere, sync their global specs to match this one
-        if str(barcode).strip() or str(name).strip():
+        # Global sync: If product_code, barcode or name exists elsewhere, sync their global specs to match this one
+        if str(product_code).strip() or str(barcode).strip() or str(name).strip():
             sync_query = '''
                 UPDATE products 
                 SET brand=?, unit=?, category=?, description=?, image=?, has_vat=? 
-                WHERE (barcode=? AND barcode!='') OR (name=? AND name!='')
+                WHERE (product_code=? AND product_code!='') OR (barcode=? AND barcode!='') OR (name=? AND name!='')
             '''
-            conn.execute(sync_query, (brand, unit, category, description, img_name, has_vat, barcode, name))
+            conn.execute(sync_query, (brand, unit, category, description, img_name, has_vat, product_code, barcode, name))
 
         conn.commit()
         return jsonify({'message': 'Бараа амжилттай нэмэгдлээ', 'id': pid})
@@ -190,6 +191,7 @@ def update_product(pid):
     if request.form:
         name = request.form.get('name', product['name'])
         brand = request.form.get('brand', product['brand'])
+        product_code = request.form.get('product_code', product['product_code'])
         barcode = request.form.get('barcode', product['barcode'])
         unit = request.form.get('unit', product['unit'])
         category = request.form.get('category', product['category'])
@@ -213,6 +215,7 @@ def update_product(pid):
         data = request.json
         name = data.get('name', product['name'])
         brand = data.get('brand', product['brand'])
+        product_code = data.get('product_code', product['product_code'])
         barcode = data.get('barcode', product['barcode'])
         unit = data.get('unit', product['unit'])
         category = data.get('category', product['category'])
@@ -228,18 +231,18 @@ def update_product(pid):
     try:
         conn.execute('''
             UPDATE products 
-            SET name=?, brand=?, barcode=?, unit=?, category=?, pack_qty=?, quantity=?, price=?, price_cn=?, has_vat=?, location_id=?, description=?, image=?
+            SET name=?, brand=?, product_code=?, barcode=?, unit=?, category=?, pack_qty=?, quantity=?, price=?, price_cn=?, has_vat=?, location_id=?, description=?, image=?
             WHERE id=?
-        ''', (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, img_name, pid))
+        ''', (name, brand, product_code, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, description, img_name, pid))
         
-        # Global sync: Sync global specs to other products sharing this barcode or name
-        if str(barcode).strip() or str(name).strip():
+        # Global sync: Sync global specs to other products sharing this product_code, barcode or name
+        if str(product_code).strip() or str(barcode).strip() or str(name).strip():
             sync_query = '''
                 UPDATE products 
-                SET brand=?, unit=?, category=?, description=?, image=?, has_vat=?, name=?, barcode=?, price=?, price_cn=?
-                WHERE id != ? AND ((barcode=? AND barcode!='') OR (name=? AND name!=''))
+                SET brand=?, unit=?, category=?, description=?, image=?, has_vat=?, name=?, product_code=?, barcode=?, price=?, price_cn=?
+                WHERE id != ? AND ((product_code=? AND product_code!='') OR (barcode=? AND barcode!='') OR (name=? AND name!=''))
             '''
-            conn.execute(sync_query, (brand, unit, category, description, img_name, has_vat, name, barcode, price, price_cn, pid, product['barcode'], product['name']))
+            conn.execute(sync_query, (brand, unit, category, description, img_name, has_vat, name, product_code, barcode, price, price_cn, pid, product['product_code'], product['barcode'], product['name']))
         
         # Cleanup old image if it changed
         if old_img and old_img != img_name:

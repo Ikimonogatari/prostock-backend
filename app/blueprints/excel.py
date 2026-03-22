@@ -38,7 +38,8 @@ def parse_excel(file_bytes):
         'price':    ['төгрөг', 'үнэ төгрөг', 'мнт', 'үнийн дүн'],
         'brand':    ['брэнд'],
         'category': ['ангилал', 'төрөл'],
-        'code':     ['бараа код', 'код', 'баркод'],
+        'product_code': ['бараа код', 'код'],
+        'barcode':  ['баркод'],
         'image_col':['зураг'],
         'location': ['агуулах'],
     }
@@ -114,7 +115,8 @@ def parse_excel(file_bytes):
         brand = str(g('brand') or '').strip()
         category = str(g('category') or '').strip()
         unit = str(g('unit') or '').strip()
-        code = str(g('code') or '').strip()
+        product_code = str(g('product_code') or '').strip()
+        barcode = str(g('barcode') or '').strip()
         loc_val = str(g('location') or '').strip() or 'Үндсэн Агуулах'
         
         rows.append({
@@ -122,7 +124,8 @@ def parse_excel(file_bytes):
             'brand': brand,
             'category': category,
             'unit': unit,
-            'code': code,
+            'product_code': product_code,
+            'barcode': barcode,
             'qty_new': qty_new,
             'qty_rem': qty_rem,
             'price': price,
@@ -174,7 +177,7 @@ def import_products():
     total_bundle_amount = 0
     for r in rows:
         try:
-            name, brand, barcode = r['name'], r['brand'], r['code']
+            name, brand, product_code, barcode = r['name'], r['brand'], r['product_code'], r['barcode']
             category = r['category'] or brand or 'Бусад'
             location_name = r['location']
             pack_qty_excel, qty_excel = r['qty_new'], r['qty_rem']
@@ -199,12 +202,12 @@ def import_products():
             if category: conn.execute('INSERT OR IGNORE INTO categories (name) VALUES (?)', (category,))
 
             # 1. Check if the exact product exists at this local location
-            # Note: Barcode might be empty, so we check (barcode OR name) AND location_id
+            # Note: Codes might be empty, so we check (product_code OR barcode OR name) AND location_id
             existing_local = conn.execute('''
                 SELECT id, pack_qty, quantity, image 
                 FROM products 
-                WHERE location_id = ? AND ((barcode != '' AND barcode = ?) OR name = ?)
-            ''', (loc_id, barcode, name)).fetchone()
+                WHERE location_id = ? AND ((product_code != '' AND product_code = ?) OR (barcode != '' AND barcode = ?) OR name = ?)
+            ''', (loc_id, product_code, barcode, name)).fetchone()
 
             if existing_local:
                 new_pack = existing_local['pack_qty'] + pack_qty_excel
@@ -222,15 +225,16 @@ def import_products():
             else:
                 # 2. It doesn't exist locally. But does it exist globally? Let's borrow its stats if so.
                 existing_global = conn.execute('''
-                    SELECT name, brand, barcode, unit, category, description, image, has_vat
+                    SELECT name, brand, product_code, barcode, unit, category, description, image, has_vat
                     FROM products 
-                    WHERE ((barcode != '' AND barcode = ?) OR name = ?)
+                    WHERE ((product_code != '' AND product_code = ?) OR (barcode != '' AND barcode = ?) OR name = ?)
                     LIMIT 1
-                ''', (barcode, name)).fetchone()
+                ''', (product_code, barcode, name)).fetchone()
 
                 if existing_global:
                     final_name = existing_global['name']
                     final_brand = existing_global['brand']
+                    final_product_code = existing_global['product_code']
                     final_barcode = existing_global['barcode']
                     final_unit = existing_global['unit']
                     final_category = existing_global['category']
@@ -239,6 +243,7 @@ def import_products():
                 else:
                     final_name = name
                     final_brand = brand
+                    final_product_code = product_code
                     final_barcode = barcode
                     final_unit = r.get('unit', '')
                     final_category = category
@@ -246,9 +251,9 @@ def import_products():
                     final_vat = 0
 
                 cursor = conn.execute('''
-                    INSERT INTO products (name, brand, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, location, image, description) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (final_name, final_brand, final_barcode, final_unit, final_category, pack_qty_excel, qty_excel, price, price_cn, final_vat, loc_id, location_name, final_image, r.get('description', '')))
+                    INSERT INTO products (name, brand, product_code, barcode, unit, category, pack_qty, quantity, price, price_cn, has_vat, location_id, location, image, description) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (final_name, final_brand, final_product_code, final_barcode, final_unit, final_category, pack_qty_excel, qty_excel, price, price_cn, final_vat, loc_id, location_name, final_image, r.get('description', '')))
                 new_id = cursor.lastrowid
                 
                 # Global sync: If we actually introduced new data (like an image), let's sync it back globally
@@ -256,9 +261,9 @@ def import_products():
                      sync_query = '''
                          UPDATE products 
                          SET brand=?, category=?, image=?, has_vat=? 
-                         WHERE id != ? AND ((barcode=? AND barcode!='') OR (name=? AND name!=''))
+                         WHERE id != ? AND ((product_code=? AND product_code!='') OR (barcode=? AND barcode!='') OR (name=? AND name!=''))
                      '''
-                     conn.execute(sync_query, (final_brand, final_category, final_image, final_vat, new_id, final_barcode, final_name))
+                     conn.execute(sync_query, (final_brand, final_category, final_image, final_vat, new_id, final_product_code, final_barcode, final_name))
                 
                 if bundle_id and qty_excel != 0:
                     conn.execute('INSERT INTO transaction_items (bundle_id, product_id, quantity, price, has_vat) VALUES (?, ?, ?, ?, ?)',
@@ -288,7 +293,7 @@ def export_products():
     conn.close()
 
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Барааны жагсаалт'
-    headers = ['Брэнд', 'Ангилал', 'Бараа код', 'Зураг', 'Бараа нэр', 'Нэгж', 'Тоо Ширхэг', 'Үлдэгдэл', 'Урдаас ирсэн үнэ Юань', 'Төгрөг', 'Нийт үнэ', 'Агуулах']
+    headers = ['Брэнд', 'Ангилал', 'Код', 'Баркод', 'Зураг', 'Бараа нэр', 'Нэгж', 'Тоо Ширхэг', 'Үлдэгдэл', 'Урдаас ирсэн үнэ Юань', 'Төгрөг', 'Нийт үнэ', 'Агуулах']
     ws.append(headers)
 
     # Styling
@@ -302,13 +307,14 @@ def export_products():
             if os.path.exists(img_path):
                 try:
                     img = XLImage(img_path); img.width = img.height = 40
-                    ws.add_image(img, f'C{idx}'); ws.row_dimensions[idx].height = 35
+                    ws.add_image(img, f'D{idx}'); ws.row_dimensions[idx].height = 35
                 except: img_val = 'Error'
         
         total_price = (p['quantity'] or 0) * (p['price'] or 0)
         ws.append([
             p['brand'] or '', 
             p['category'] or '', 
+            p['product_code'] or '', 
             p['barcode'] or '', 
             img_val, 
             p['name'], 
@@ -328,9 +334,9 @@ def export_products():
 def download_template():
     if not HAS_OPENPYXL: return jsonify({'error': 'openpyxl суулгаагүй'}), 500
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Бараа импорт'
-    headers = ['Брэнд', 'Ангилал', 'Бараа код', 'Зураг', 'Бараа нэр', 'Нэгж', 'Тоо Ширхэг', 'Үлдэгдэл', 'Урдаас ирсэн үнэ Юань', 'Төгрөг', 'Агуулах']
+    headers = ['Брэнд', 'Ангилал', 'Код', 'Баркод', 'Зураг', 'Бараа нэр', 'Нэгж', 'Тоо Ширхэг', 'Үлдэгдэл', 'Урдаас ирсэн үнэ Юань', 'Төгрөг', 'Агуулах']
     ws.append(headers)
-    ws.append(['Samsung', 'Утас', '001', '', 'Galaxy S21', 'ширхэг', 10, 10, '500 ¥', '500,000 ₮', 'Үндсэн агуулах'])
+    ws.append(['Samsung', 'Утас', 'CODE001', 'BAR001', '', 'Galaxy S21', 'ширхэг', 10, 10, '500 ¥', '500,000 ₮', 'Үндсэн агуулах'])
     
     output = io.BytesIO(); wb.save(output); output.seek(0)
     return send_file(output, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', as_attachment=True, download_name='template.xlsx')
